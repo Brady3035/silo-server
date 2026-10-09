@@ -27,12 +27,11 @@ establish media identity. Watch provider sync and webhook sync use the same matc
   Silo has no season favorite.
 - Emby: played and resumable movies and episodes, plus favorite movies, shows, and episodes.
   Hiding an item from Emby's Continue Watching leaves its user data unchanged; only
-  `GET /Users/{id}/Items/Resume` leaves it out. A resumable movie the list leaves out keeps
-  its imported position and gets a Continue Watching dismissal tied to that position.
-  Shows are judged per show, after matching: since Emby 4.6 merged Next Up into the row,
-  the list holds one episode per show, the one in progress or the next unstarted one, and
-  hiding a show hides it whether it was paused mid-episode or between episodes. See
-  [Continue Watching row](#continue-watching-row).
+  `GET /Users/{id}/Items/Resume` leaves it out. That list shows at most one episode per show,
+  and hiding an episode hides its show, so a resumable movie the list leaves out, and every
+  resumable episode of a show the list leaves out, keeps its imported position and gets a
+  Continue Watching dismissal tied to that position. A show between episodes has no such
+  episode; see [Continue Watching row](#continue-watching-row).
 - Plex: watched movies and episodes and On Deck progress; personal imports also add the
   account watchlist, and administrator imports read the account's play history.
 
@@ -40,25 +39,34 @@ establish media identity. Watch provider sync and webhook sync use the same matc
 
 A provider that reports its source's own Continue Watching row
 (`ContinueWatchingRowReporter`, Emby today) gets a final pass after the run's records,
-before the run completes. Each show the run imported episodes of that Silo would surface
-in Continue Watching or Next Up (a series-scoped `ListNextUp` with resumable episodes), but
-that the source's row leaves out, is dropped for the profile, as Silo's own Next Up
-dismissal drops a series.
+before the run completes. Since Emby 4.6 merged Next Up into Continue Watching, the row
+lists one episode per show: the one in progress, or the next unstarted one. The pass drops,
+for the profile, each show the run imported episodes of that Silo would surface in Continue
+Watching or Next Up (a series-scoped `ListNextUp` with resumable episodes) but that the row
+leaves out, as Silo's own Next Up dismissal drops a series.
 
+- A show missing from the row is taken as hidden only with evidence the row would
+  otherwise list it: its most recently played episode was imported in progress, or the row lists at
+  least one unstarted episode (so Emby includes shows between episodes) and the series'
+  `UnplayedItemCount` says episodes remain. A show finished at the source is left alone,
+  even when Silo has episodes the source lacks.
 - A show counts as listed when any copy of it at the source is in the row: by the source
-  series of the imported episodes, or by the listed series' provider IDs, so a show held
-  once per library is not dropped for the copy that isn't listed.
-- A show Silo would not surface, such as a finished one, is left alone: dropping it would
-  hide its next season, which the source would show.
-- The drop is dated at the show's newest imported play, not at the run. A drop ends at the
-  first progress newer than it, so playback in Silo, or at the source followed by another
-  import, brings the show back, re-runs are idempotent, and they repair earlier imports.
-  A show with Silo activity newer than the import is skipped, as is one with an active
-  drop or one the profile dropped and watched again after the imported play. An ended
-  drop older than the imported play is replaced, fenced on its `dropped_at`.
+  series of the imported episodes, or by the listed series' provider IDs, which mark every
+  Silo series with that ID. A listed show the run imported nothing of and that has no
+  provider ID stops the pass, since it could be a copy of any of them.
+- The drop is dated at the run, or at the show's last imported play when the source's clock
+  is ahead, so the next playback, in Silo or at the source followed by another import,
+  ends it. A source clock behind Silo's can stamp a later play before the drop, which then
+  stays until the show is played in Silo. A show with Silo activity newer than its last imported play is
+  skipped, as is one with an active drop or one the profile dropped and watched again
+  after that play. An ended drop older than that play is replaced, fenced on its
+  `dropped_at`. Re-running an import drops nothing new.
+- Drops sync to watch providers that support dropped shows, like any other drop.
 - Without the row, or when it lists an episode without a series, or when series metadata
-  could not be read, nothing is dropped. A failed pass leaves a run warning and the run
-  completes.
+  could not be read, nothing is dropped; the per-episode dismissals above still apply. A
+  failed pass leaves a run warning and the run completes. `ListNextUp` reads Postgres
+  progress, so profiles in the SQLite user store get the per-episode dismissals only.
+- Each run logs one `continue watching pass` line with its counts.
 
 Emby list queries omit the production year, play count, and last-played date unless
 `Fields` names `ProductionYear`, `UserDataPlayCount`, and `UserDataLastPlayedDate`. The

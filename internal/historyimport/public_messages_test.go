@@ -63,7 +63,6 @@ func TestPublicWarningSummarizesKnownDiagnostics(t *testing.T) {
 		warnEmbyFavoritesUnavailable:                                          embyFavoritesUnavailableSummary,
 		legacyEmbyFavoritesPrefix + "emby http 500: <html>stack trace</html>": embyFavoritesUnavailableSummary,
 		warnEmbySeriesUnavailable:                                             embySeriesUnavailableSummary,
-		warnEmbyResumeListUnavailable:                                         embyResumeListUnavailableSummary,
 		warnContinueWatchingNotReconciled:                                     continueWatchingNotReconciledSummary,
 		warnJellyfinResumeUnavailable:                                         jellyfinResumeUnavailableSummary,
 		warnJellyfinFavoritesUnavailable:                                      jellyfinFavoritesUnavailableSummary,

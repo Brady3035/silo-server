@@ -38,6 +38,8 @@ type importedEpisode struct {
 	sourceSeriesID string
 	// at is the stamp the episode's progress was imported with.
 	at time.Time
+	// inProgress marks an episode imported with a resume point.
+	inProgress bool
 }
 
 // newImportedEpisode records a matched episode record for the pass, stamped
@@ -47,7 +49,23 @@ func newImportedEpisode(itemID string, record Record) importedEpisode {
 	if at.IsZero() {
 		at = undatedImportTime
 	}
-	return importedEpisode{itemID: itemID, sourceSeriesID: record.SourceSeriesID, at: at}
+	return importedEpisode{
+		itemID:         itemID,
+		sourceSeriesID: record.SourceSeriesID,
+		at:             at,
+		inProgress:     !record.Played && record.PositionSeconds > 0,
+	}
+}
+
+// importedShow is what a run imported of one Silo series.
+type importedShow struct {
+	// lastPlay is the newest imported stamp of its episodes.
+	lastPlay time.Time
+	// inProgress: its most recently played episode was imported with a
+	// resume point.
+	inProgress bool
+	// unfinished: the source counts the show as having episodes left.
+	unfinished bool
 }
 
 // reconcileContinueWatching drops each show the run put in the profile's
@@ -56,89 +74,135 @@ func newImportedEpisode(itemID string, record Record) importedEpisode {
 // and keeps it hidden until one of its episodes is played again; a Silo drop
 // behaves the same way. It returns how many shows it dropped.
 //
-// Each drop is dated at the show's newest imported play, not at the time of
-// the run, so it never outlasts playback newer than that, in Silo or at the
-// source on a later run: a drop ends at the first progress newer than it.
-// That also keeps the pass idempotent, and it never touches a show the user
-// has watched in Silo since the source's last play.
+// A show missing from the row is only taken as hidden when the source gives
+// evidence the row would otherwise list it: an episode in progress, or, when
+// the row lists shows between episodes at all, the source counting the show
+// as unfinished. A show the user finished at the source is left alone, even
+// when Silo has episodes the source lacks.
+//
+// The drop is dated at the run (or at the last play, if the source's clock
+// is ahead), so it ends at the first playback after the import, in Silo or
+// at the source on a later run. Shows with Silo activity
+// newer than their last imported play are left alone, as are the profile's
+// own drops, so re-running an import changes nothing.
 //
 // A show counts as listed when any of its copies at the source is in the
 // row: by the source series of the episodes the run imported, or by the
-// listed series' provider IDs.
+// listed series' provider IDs, which mark every Silo series that has them.
 func (s *Service) reconcileContinueWatching(ctx context.Context, userID int, profileID string, row ContinueWatchingRow, episodes []importedEpisode) (int, error) {
 	if s.seriesDrops == nil || s.nextUp == nil {
 		slog.InfoContext(ctx, "history import: continue watching pass skipped: stores not configured", "component", "historyimport")
 		return 0, nil
 	}
 	// One summary line says where the pass stopped and why: how many shows
-	// the run imported, how many the source's row lists, how many Silo would
-	// surface among the rest, and how many of those were dropped or kept.
-	var stats struct{ shows, listed, surfaced, keptNewer, keptDropped, dropped int }
+	// the run imported, how many the source's row lists, how many of the
+	// rest the source shows as unfinished and Silo would surface, and how
+	// many of those were dropped or kept.
+	var stats struct {
+		shows, listed, settled, surfaced, keptNewer, keptDropped, dropped int
+		unidentified                                                      bool
+	}
 	defer func() {
 		slog.InfoContext(ctx, "history import: continue watching pass",
 			"component", "historyimport", "profile_id", profileID,
-			"episodes", len(episodes), "row_shows", len(row.SourceSeriesIDs), "row_series", len(row.Series),
-			"shows", stats.shows, "listed", stats.listed, "surfaced_unlisted", stats.surfaced,
-			"kept_newer_activity", stats.keptNewer, "kept_existing_drop", stats.keptDropped, "dropped", stats.dropped)
+			"episodes", len(episodes), "row_shows", len(row.SourceSeriesIDs), "row_includes_next_up", row.IncludesNextUp,
+			"shows", stats.shows, "listed", stats.listed, "not_hideable", stats.settled, "row_unidentified", stats.unidentified,
+			"surfaced_unlisted", stats.surfaced, "kept_newer_activity", stats.keptNewer,
+			"kept_existing_drop", stats.keptDropped, "dropped", stats.dropped)
 	}()
 	if len(episodes) == 0 {
 		return 0, nil
 	}
 
-	// The shows the run imported, with each one's newest imported stamp.
-	// Episodes of one source series share a show, so one is resolved per
-	// source series once it resolves.
-	anchors := make(map[string]time.Time)
-	bySource := make(map[string]string)
+	// Resolve every episode: one source series can span several Silo series,
+	// as when a show is split into seasons differently.
+	shows := make(map[string]*importedShow)
+	bySource := make(map[string][]string)
+	resolved := make(map[string]string)
 	for _, episode := range episodes {
-		seriesID, known := bySource[episode.sourceSeriesID]
-		if !known || episode.sourceSeriesID == "" {
+		seriesID, known := resolved[episode.itemID]
+		if !known {
 			id, ok, err := s.seriesDrops.ResolveDropSeries(ctx, episode.itemID)
 			if err != nil {
 				return 0, err
 			}
 			if !ok {
-				continue
+				id = ""
 			}
+			resolved[episode.itemID] = id
 			seriesID = id
-			if episode.sourceSeriesID != "" {
-				bySource[episode.sourceSeriesID] = id
-			}
 		}
-		// Postgres keeps microseconds, so compare stamps as stored.
-		at := episode.at.UTC().Truncate(time.Microsecond)
-		if current, ok := anchors[seriesID]; !ok || at.After(current) {
-			anchors[seriesID] = at
+		if seriesID == "" {
+			continue
 		}
+		if episode.sourceSeriesID != "" && !slices.Contains(bySource[episode.sourceSeriesID], seriesID) {
+			bySource[episode.sourceSeriesID] = append(bySource[episode.sourceSeriesID], seriesID)
+		}
+		show := shows[seriesID]
+		if show == nil {
+			show = &importedShow{}
+			shows[seriesID] = show
+		}
+		// The show is in progress when its most recently played episode is:
+		// Emby leaves out a show whose paused episode is older than a later
+		// finished one, without it being hidden.
+		switch {
+		case episode.at.After(show.lastPlay):
+			show.lastPlay = episode.at
+			show.inProgress = episode.inProgress
+		case episode.at.Equal(show.lastPlay):
+			show.inProgress = show.inProgress || episode.inProgress
+		}
+		show.unfinished = show.unfinished || row.UnfinishedSourceSeries[episode.sourceSeriesID]
 	}
-	stats.shows = len(anchors)
-	if len(anchors) == 0 {
+	stats.shows = len(shows)
+	if len(shows) == 0 {
 		return 0, nil
 	}
 
 	listed := make(map[string]bool)
 	for sourceSeriesID := range row.SourceSeriesIDs {
-		if seriesID, ok := bySource[sourceSeriesID]; ok {
+		for _, seriesID := range bySource[sourceSeriesID] {
 			listed[seriesID] = true
 		}
 	}
+	withProviderIDs := make(map[string]bool, len(row.Series))
 	for _, series := range row.Series {
-		match, _, err := s.matcher.Match(ctx, series)
+		if series.TMDBID == "" && series.TVDBID == "" && series.IMDbID == "" {
+			continue
+		}
+		withProviderIDs[series.ExternalID] = true
+		ids, err := s.seriesIDsByProviderIDs(ctx, series)
 		if err != nil {
 			return 0, err
 		}
-		if match != nil {
-			listed[match.MediaItemID] = true
+		for _, id := range ids {
+			listed[id] = true
 		}
 	}
+	// A listed show the run imported nothing of and that has no provider ID
+	// might be a copy of any imported show; with it in the row nothing can be
+	// called missing. One with provider IDs that match no Silo series is a
+	// show Silo lacks, which hides nothing.
+	for sourceSeriesID := range row.SourceSeriesIDs {
+		if len(bySource[sourceSeriesID]) == 0 && !withProviderIDs[sourceSeriesID] {
+			stats.unidentified = true
+		}
+	}
+	if stats.unidentified {
+		return 0, nil
+	}
 
-	// Only shows Silo would surface are dropped: a finished show isn't in
-	// Continue Watching either way, and dropping it would hide its next
-	// season, which the source would show.
+	// Only shows Silo would surface are dropped: a show Silo would not list
+	// is not in its Continue Watching either way.
 	candidates := make([]string, 0)
-	for seriesID := range anchors {
+	for seriesID, show := range shows {
 		if listed[seriesID] {
 			stats.listed++
+			continue
+		}
+		if !show.inProgress && !(row.IncludesNextUp && show.unfinished) {
+			stats.settled++
 			continue
 		}
 		surfaced, err := s.nextUp.ListNextUp(ctx, catalog.NextUpQuery{
@@ -170,27 +234,35 @@ func (s *Service) reconcileContinueWatching(ctx context.Context, userID int, pro
 		existing[drop.SeriesID] = drop
 	}
 
+	now := s.clock()
 	dropped := 0
 	for _, seriesID := range candidates {
-		anchor := anchors[seriesID]
+		// Postgres keeps microseconds, so compare stamps as stored.
+		lastPlay := shows[seriesID].lastPlay.UTC().Truncate(time.Microsecond)
 		// Playback newer than anything imported means the user is watching
 		// the show in Silo, whatever the source's row says.
-		if latest, ok := activity[seriesID]; ok && latest.After(anchor) {
+		if latest, ok := activity[seriesID]; ok && latest.After(lastPlay) {
 			stats.keptNewer++
 			continue
 		}
 		var observed *time.Time
 		if drop, ok := existing[seriesID]; ok {
-			// Already hidden, or dropped since and watched again: the
-			// profile's own choice stands.
-			if drop.Active || !drop.DroppedAt.Before(anchor) {
+			// Already hidden, or dropped since the source's last play and
+			// watched again: the profile's own choice stands.
+			if drop.Active || !drop.DroppedAt.Before(lastPlay) {
 				stats.keptDropped++
 				continue
 			}
-			droppedAt := drop.DroppedAt
-			observed = &droppedAt
+			previous := drop.DroppedAt
+			observed = &previous
 		}
-		applied, err := s.seriesDrops.ImportDrop(ctx, userID, profileID, seriesID, anchor, observed)
+		// The source's clock can run ahead of this server's; a drop dated
+		// before the play it hides would end as it is written.
+		droppedAt := now
+		if lastPlay.After(droppedAt) {
+			droppedAt = lastPlay
+		}
+		applied, err := s.seriesDrops.ImportDrop(ctx, userID, profileID, seriesID, droppedAt, observed)
 		if err != nil {
 			return dropped, err
 		}
@@ -200,4 +272,36 @@ func (s *Service) reconcileContinueWatching(ctx context.Context, userID int, pro
 		}
 	}
 	return dropped, nil
+}
+
+// seriesIDsByProviderIDs returns every Silo series sharing one of series'
+// provider IDs. Unlike Matcher.Match it keeps every match, so a show held in
+// two libraries marks both as listed.
+func (s *Service) seriesIDsByProviderIDs(ctx context.Context, series Record) ([]string, error) {
+	var ids []string
+	for _, candidate := range []struct{ column, value string }{
+		{"tmdb_id", series.TMDBID}, {"tvdb_id", series.TVDBID}, {"imdb_id", series.IMDbID},
+	} {
+		if candidate.value == "" {
+			continue
+		}
+		rows, err := s.matcher.repo.MatchMediaByExternalID(ctx, KindSeries, candidate.column, candidate.value)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if !slices.Contains(ids, row.ContentID) {
+				ids = append(ids, row.ContentID)
+			}
+		}
+	}
+	return ids, nil
+}
+
+// clock returns the current time; tests replace now.
+func (s *Service) clock() time.Time {
+	if s.now != nil {
+		return s.now().UTC()
+	}
+	return time.Now().UTC()
 }

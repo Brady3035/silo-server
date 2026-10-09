@@ -59,7 +59,7 @@ func (p *EmbyProvider) Fetch(ctx context.Context) ([]Record, []string, error) {
 		warnings = append(warnings, warnEmbyResumeListUnavailable)
 		listed = nil
 	}
-	hidden := hiddenMoviesFromResume(resumableItems, listed, rowRead)
+	hidden := hiddenFromResume(resumableItems, listed, rowRead)
 	// Warnings store fixed text: v1 returns them verbatim, and upstream errors
 	// can carry the server's response body. The error itself is logged.
 	favoriteItems, err := p.client.FetchFavoriteItems(ctx, p.auth)
@@ -154,27 +154,43 @@ func embyWatchedRecords(item embyItem, series embyItem) []Record {
 	return records
 }
 
-// hiddenMoviesFromResume returns the resumable movies the user hid from
-// Emby's Continue Watching. Hiding leaves a movie's user data unchanged and
-// the IsResumable filter still returns it; only Emby's own resume list leaves
-// it out. Shows are judged after matching, by the import's reconcile pass
-// (see ContinueWatchingRow): hiding is per show, and a show between episodes
-// has nothing resumable to mark. Without the list nothing is reported hidden.
-func hiddenMoviesFromResume(resumable, listed []embyItem, listRead bool) map[string]bool {
+// hiddenFromResume returns the resumable items the user hid from Emby's
+// Continue Watching. Hiding leaves an item's user data unchanged and the
+// IsResumable filter still returns it; only Emby's own resume list leaves it
+// out. That list shows one episode per series, so episodes are judged by
+// series: hiding an episode hides its whole series, and every resumable
+// episode of a series missing from the list is reported. Each gets a
+// Continue Watching dismissal, which also covers profiles and runs the
+// series pass (see ContinueWatchingRow) cannot act for. Without the list
+// nothing is reported hidden.
+func hiddenFromResume(resumable, listed []embyItem, listRead bool) map[string]bool {
 	if !listRead {
 		return nil
 	}
 	shown := make(map[string]bool, len(listed))
 	for _, item := range listed {
-		shown[item.ID] = true
+		shown[resumeListKey(item)] = true
 	}
 	hidden := make(map[string]bool)
 	for _, item := range resumable {
-		if strings.EqualFold(item.Type, "movie") && !shown[item.ID] {
+		if key := resumeListKey(item); key != "" && !shown[key] {
 			hidden[item.ID] = true
 		}
 	}
 	return hidden
+}
+
+// resumeListKey is the ID Emby's resume list represents an item by: a movie's
+// own ID, or an episode's series ID, since the list shows one episode per
+// series. Other items have no key.
+func resumeListKey(item embyItem) string {
+	switch {
+	case strings.EqualFold(item.Type, "movie"):
+		return item.ID
+	case strings.EqualFold(item.Type, "episode"):
+		return item.SeriesID
+	}
+	return ""
 }
 
 // continueWatchingRow describes the shows in Emby's Continue Watching row:
@@ -182,8 +198,19 @@ func hiddenMoviesFromResume(resumable, listed []embyItem, listRead bool) map[str
 // 4.6 merged Next Up into the row, the next unstarted one. A listed episode
 // without a series can't be placed, so such a row is not reported (nil):
 // any show the import touched might be the one it stands for.
+//
+// The row also records whether it lists any unstarted episode (IncludesNextUp):
+// Emby can keep Next Up out of the row, and then a show between episodes is
+// missing from it whether or not it was hidden. And it records which of the
+// import's shows Emby counts as unfinished, from each series' unplayed count:
+// a show the user finished at the source is missing from the row too.
 func continueWatchingRow(listed []embyItem, seriesMeta map[string]embyItem) *ContinueWatchingRow {
-	row := &ContinueWatchingRow{SourceSeriesIDs: map[string]bool{}}
+	row := &ContinueWatchingRow{SourceSeriesIDs: map[string]bool{}, UnfinishedSourceSeries: map[string]bool{}}
+	for id, series := range seriesMeta {
+		if unplayed := series.UserData.UnplayedItemCount; unplayed != nil && *unplayed > 0 {
+			row.UnfinishedSourceSeries[id] = true
+		}
+	}
 	for _, item := range listed {
 		if !strings.EqualFold(item.Type, "episode") {
 			continue
@@ -191,6 +218,9 @@ func continueWatchingRow(listed []embyItem, seriesMeta map[string]embyItem) *Con
 		seriesID := strings.TrimSpace(item.SeriesID)
 		if seriesID == "" {
 			return nil
+		}
+		if !item.UserData.Played && item.UserData.PlaybackPositionTicks == 0 {
+			row.IncludesNextUp = true
 		}
 		if row.SourceSeriesIDs[seriesID] {
 			continue

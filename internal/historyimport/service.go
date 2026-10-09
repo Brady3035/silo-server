@@ -52,6 +52,8 @@ type Service struct {
 	// its Continue Watching (see SetContinueWatchingStores).
 	seriesDrops SeriesDropStore
 	nextUp      NextUpLister
+	// now dates the drops that pass writes; nil means time.Now.
+	now func() time.Time
 }
 
 func NewService(bgContext context.Context, repo *Repository, storeProvider userstore.UserStoreProvider) *Service {
