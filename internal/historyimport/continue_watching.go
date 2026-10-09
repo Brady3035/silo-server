@@ -3,6 +3,7 @@ package historyimport
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"time"
 
@@ -13,10 +14,11 @@ import (
 // writes through. notifications.DroppedSeriesTracker satisfies it, so an
 // imported drop recomputes interest like a drop made in Silo.
 type SeriesDropStore interface {
-	ResolveDropSeries(ctx context.Context, itemID string) (string, bool, error)
+	EpisodeSeriesIDs(ctx context.Context, episodeIDs []string) (map[string]string, error)
 	ListDropped(ctx context.Context, userID int, profileID string, seriesIDs []string) ([]catalog.DroppedSeries, error)
 	LatestActivity(ctx context.Context, userID int, profileID string, seriesIDs []string) (map[string]time.Time, error)
 	ImportDrop(ctx context.Context, userID int, profileID, seriesID string, droppedAt time.Time, observed *time.Time) (bool, error)
+	DeleteIfUnchanged(ctx context.Context, userID int, profileID, seriesID string, observed time.Time) (bool, error)
 }
 
 // NextUpLister reports what a profile's Continue Watching and Next Up would
@@ -80,9 +82,9 @@ type importedShow struct {
 // as unfinished. A show the user finished at the source is left alone, even
 // when Silo has episodes the source lacks.
 //
-// The drop is dated at the run (or at the last play, if the source's clock
-// is ahead), so it ends at the first playback after the import, in Silo or
-// at the source on a later run. Shows with Silo activity
+// The drop is dated at the run, so it ends at the first playback after the
+// import, in Silo or at the source on a later run. A show whose last play at
+// the source is stamped after this server's clock waits for a later import. Shows with Silo activity
 // newer than their last imported play are left alone, as are the profile's
 // own drops, so re-running an import changes nothing.
 //
@@ -99,8 +101,8 @@ func (s *Service) reconcileContinueWatching(ctx context.Context, userID int, pro
 	// rest the source shows as unfinished and Silo would surface, and how
 	// many of those were dropped or kept.
 	var stats struct {
-		shows, listed, settled, surfaced, keptNewer, keptDropped, dropped int
-		unidentified                                                      bool
+		shows, listed, settled, surfaced, keptNewer, keptDropped, keptFuture, undone, dropped int
+		unidentified                                                                          bool
 	}
 	defer func() {
 		slog.InfoContext(ctx, "history import: continue watching pass",
@@ -108,30 +110,31 @@ func (s *Service) reconcileContinueWatching(ctx context.Context, userID int, pro
 			"episodes", len(episodes), "row_shows", len(row.SourceSeriesIDs), "row_includes_next_up", row.IncludesNextUp,
 			"shows", stats.shows, "listed", stats.listed, "not_hideable", stats.settled, "row_unidentified", stats.unidentified,
 			"surfaced_unlisted", stats.surfaced, "kept_newer_activity", stats.keptNewer,
-			"kept_existing_drop", stats.keptDropped, "dropped", stats.dropped)
+			"kept_existing_drop", stats.keptDropped, "kept_future_play", stats.keptFuture,
+			"undone_for_new_activity", stats.undone, "dropped", stats.dropped)
 	}()
 	if len(episodes) == 0 {
 		return 0, nil
 	}
 
-	// Resolve every episode: one source series can span several Silo series,
-	// as when a show is split into seasons differently.
+	// Resolve every episode, in batches: one source series can span several
+	// Silo series, as when a show is split into seasons differently.
+	itemIDs := make([]string, 0, len(episodes))
+	seen := make(map[string]bool, len(episodes))
+	for _, episode := range episodes {
+		if !seen[episode.itemID] {
+			seen[episode.itemID] = true
+			itemIDs = append(itemIDs, episode.itemID)
+		}
+	}
+	seriesOf, err := s.seriesDrops.EpisodeSeriesIDs(ctx, itemIDs)
+	if err != nil {
+		return 0, err
+	}
 	shows := make(map[string]*importedShow)
 	bySource := make(map[string][]string)
-	resolved := make(map[string]string)
 	for _, episode := range episodes {
-		seriesID, known := resolved[episode.itemID]
-		if !known {
-			id, ok, err := s.seriesDrops.ResolveDropSeries(ctx, episode.itemID)
-			if err != nil {
-				return 0, err
-			}
-			if !ok {
-				id = ""
-			}
-			resolved[episode.itemID] = id
-			seriesID = id
-		}
+		seriesID := seriesOf[episode.itemID]
 		if seriesID == "" {
 			continue
 		}
@@ -221,6 +224,10 @@ func (s *Service) reconcileContinueWatching(ctx context.Context, userID int, pro
 	}
 	slices.Sort(candidates)
 
+	// The drop time is taken before activity is read. Playback in Silo
+	// stamps its progress with this server's clock when it saves, so playback
+	// the read misses is newer than the drop and ends it.
+	now := s.clock()
 	activity, err := s.seriesDrops.LatestActivity(ctx, userID, profileID, candidates)
 	if err != nil {
 		return 0, err
@@ -234,11 +241,18 @@ func (s *Service) reconcileContinueWatching(ctx context.Context, userID int, pro
 		existing[drop.SeriesID] = drop
 	}
 
-	now := s.clock()
-	dropped := 0
+	written := make(map[string]time.Time)
 	for _, seriesID := range candidates {
 		// Postgres keeps microseconds, so compare stamps as stored.
 		lastPlay := shows[seriesID].lastPlay.UTC().Truncate(time.Microsecond)
+		// A play stamped after this server's clock comes from a source clock
+		// that runs ahead. A drop dated before it would end at once, and one
+		// dated after it would outlast playback here, so the show waits for a
+		// later import.
+		if lastPlay.After(now) {
+			stats.keptFuture++
+			continue
+		}
 		// Playback newer than anything imported means the user is watching
 		// the show in Silo, whatever the source's row says.
 		if latest, ok := activity[seriesID]; ok && latest.After(lastPlay) {
@@ -256,32 +270,55 @@ func (s *Service) reconcileContinueWatching(ctx context.Context, userID int, pro
 			previous := drop.DroppedAt
 			observed = &previous
 		}
-		// The source's clock can run ahead of this server's; a drop dated
-		// before the play it hides would end as it is written.
-		droppedAt := now
-		if lastPlay.After(droppedAt) {
-			droppedAt = lastPlay
-		}
-		applied, err := s.seriesDrops.ImportDrop(ctx, userID, profileID, seriesID, droppedAt, observed)
+		applied, err := s.seriesDrops.ImportDrop(ctx, userID, profileID, seriesID, now, observed)
 		if err != nil {
-			return dropped, err
+			return len(written), err
 		}
 		if applied {
-			dropped++
-			stats.dropped = dropped
+			written[seriesID] = now
 		}
 	}
+	if len(written) == 0 {
+		return 0, nil
+	}
+
+	// Playback that saved between the activity read and the write, stamped
+	// just before the drop time, would leave the drop active. Read activity
+	// again and take back each drop it would wrongly keep.
+	writtenIDs := slices.Sorted(maps.Keys(written))
+	recheck, err := s.seriesDrops.LatestActivity(ctx, userID, profileID, writtenIDs)
+	if err != nil {
+		return len(written), err
+	}
+	for _, seriesID := range writtenIDs {
+		lastPlay := shows[seriesID].lastPlay.UTC().Truncate(time.Microsecond)
+		if latest, ok := recheck[seriesID]; ok && latest.After(lastPlay) {
+			if _, err := s.seriesDrops.DeleteIfUnchanged(ctx, userID, profileID, seriesID, written[seriesID]); err != nil {
+				return len(written), err
+			}
+			delete(written, seriesID)
+			stats.undone++
+		}
+	}
+	dropped := len(written)
+	stats.dropped = dropped
 	return dropped, nil
 }
 
-// seriesIDsByProviderIDs returns every Silo series sharing one of series'
-// provider IDs. Unlike Matcher.Match it keeps every match, so a show held in
-// two libraries marks both as listed.
+// seriesIDsByProviderIDs returns every Silo series with the first of
+// series' provider IDs that matches any, in the matcher's order (TVDB, then
+// TMDB, then IMDb, or TMDB first when PreferTMDB is set). Unlike
+// Matcher.Match it keeps every series with that ID, so a show held in two
+// libraries marks both as listed; a stale secondary ID is never consulted
+// once the primary one matches.
 func (s *Service) seriesIDsByProviderIDs(ctx context.Context, series Record) ([]string, error) {
-	var ids []string
-	for _, candidate := range []struct{ column, value string }{
-		{"tmdb_id", series.TMDBID}, {"tvdb_id", series.TVDBID}, {"imdb_id", series.IMDbID},
-	} {
+	candidates := []struct{ column, value string }{
+		{"tvdb_id", series.TVDBID}, {"tmdb_id", series.TMDBID}, {"imdb_id", series.IMDbID},
+	}
+	if series.PreferTMDB {
+		candidates[0], candidates[1] = candidates[1], candidates[0]
+	}
+	for _, candidate := range candidates {
 		if candidate.value == "" {
 			continue
 		}
@@ -289,13 +326,18 @@ func (s *Service) seriesIDsByProviderIDs(ctx context.Context, series Record) ([]
 		if err != nil {
 			return nil, err
 		}
+		if len(rows) == 0 {
+			continue
+		}
+		ids := make([]string, 0, len(rows))
 		for _, row := range rows {
 			if !slices.Contains(ids, row.ContentID) {
 				ids = append(ids, row.ContentID)
 			}
 		}
+		return ids, nil
 	}
-	return ids, nil
+	return nil, nil
 }
 
 // clock returns the current time; tests replace now.

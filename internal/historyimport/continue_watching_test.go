@@ -11,14 +11,18 @@ import (
 )
 
 // fakeSeriesDrops is a SeriesDropStore over maps. Drops it imports are
-// recorded in imported.
+// recorded in imported; deleted holds the ones taken back. activityAtWrite is
+// playback that saves while a drop is written, seen only by later reads.
 type fakeSeriesDrops struct {
-	seriesOf   map[string]string // episode item ID -> series ID
-	dropped    map[string]catalog.DroppedSeries
-	activity   map[string]time.Time
-	resolveErr error
+	seriesOf        map[string]string // episode item ID -> series ID
+	dropped         map[string]catalog.DroppedSeries
+	activity        map[string]time.Time
+	activityAtWrite map[string]time.Time
+	resolveErr      error
 
-	imported []importedDrop
+	resolveCalls int
+	imported     []importedDrop
+	deleted      []importedDrop
 }
 
 type importedDrop struct {
@@ -27,12 +31,18 @@ type importedDrop struct {
 	observed  *time.Time
 }
 
-func (f *fakeSeriesDrops) ResolveDropSeries(_ context.Context, itemID string) (string, bool, error) {
+func (f *fakeSeriesDrops) EpisodeSeriesIDs(_ context.Context, episodeIDs []string) (map[string]string, error) {
+	f.resolveCalls++
 	if f.resolveErr != nil {
-		return "", false, f.resolveErr
+		return nil, f.resolveErr
 	}
-	seriesID, ok := f.seriesOf[itemID]
-	return seriesID, ok, nil
+	out := make(map[string]string)
+	for _, id := range episodeIDs {
+		if seriesID, ok := f.seriesOf[id]; ok {
+			out[id] = seriesID
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeSeriesDrops) ListDropped(_ context.Context, _ int, _ string, seriesIDs []string) ([]catalog.DroppedSeries, error) {
@@ -57,13 +67,27 @@ func (f *fakeSeriesDrops) LatestActivity(_ context.Context, _ int, _ string, ser
 
 func (f *fakeSeriesDrops) ImportDrop(_ context.Context, _ int, _ string, seriesID string, droppedAt time.Time, observed *time.Time) (bool, error) {
 	f.imported = append(f.imported, importedDrop{seriesID: seriesID, droppedAt: droppedAt, observed: observed})
+	if at, ok := f.activityAtWrite[seriesID]; ok {
+		if f.activity == nil {
+			f.activity = make(map[string]time.Time)
+		}
+		f.activity[seriesID] = at
+	}
 	return true, nil
 }
 
+func (f *fakeSeriesDrops) DeleteIfUnchanged(_ context.Context, _ int, _ string, seriesID string, observed time.Time) (bool, error) {
+	f.deleted = append(f.deleted, importedDrop{seriesID: seriesID, droppedAt: observed})
+	return true, nil
+}
+
+// importedIDs are the series whose imported drop was kept.
 func (f *fakeSeriesDrops) importedIDs() []string {
 	ids := make([]string, 0, len(f.imported))
 	for _, drop := range f.imported {
-		ids = append(ids, drop.seriesID)
+		if !slices.ContainsFunc(f.deleted, func(d importedDrop) bool { return d.seriesID == drop.seriesID }) {
+			ids = append(ids, drop.seriesID)
+		}
 	}
 	slices.Sort(ids)
 	return ids
@@ -271,22 +295,109 @@ func TestReconcileContinueWatchingJudgesProgressByTheNewestPlay(t *testing.T) {
 	}
 }
 
-// A source clock ahead of Silo's must not date a drop before the play it
-// hides, or the drop would end as it is written.
-func TestReconcileContinueWatchingNeverDatesADropBeforeTheLastPlay(t *testing.T) {
+// A play stamped after this server's clock comes from a source clock that
+// runs ahead; a drop can be dated neither before nor after it safely, so the
+// show waits for a later import.
+func TestReconcileContinueWatchingSkipsShowsPlayedAfterTheServerClock(t *testing.T) {
 	t.Parallel()
 
-	ahead := reconcileNow.Add(10 * time.Minute)
 	drops := &fakeSeriesDrops{seriesOf: map[string]string{"ep": "s-1"}}
 	service := reconcileService(drops, surfaceAll(drops), nil)
 
 	row := ContinueWatchingRow{SourceSeriesIDs: map[string]bool{}, IncludesNextUp: true, UnfinishedSourceSeries: map[string]bool{"src": true}}
-	episodes := []importedEpisode{{itemID: "ep", sourceSeriesID: "src", at: ahead}}
+	episodes := []importedEpisode{{itemID: "ep", sourceSeriesID: "src", at: reconcileNow.Add(10 * time.Minute)}}
 	if _, err := service.reconcileContinueWatching(context.Background(), 7, "p", row, episodes); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if len(drops.imported) != 1 || !drops.imported[0].droppedAt.Equal(ahead) {
-		t.Fatalf("drops = %+v, want one dated at the last play %v", drops.imported, ahead)
+	if len(drops.imported) != 0 {
+		t.Fatalf("drops = %+v, want none for a future-stamped play", drops.imported)
+	}
+}
+
+// Playback that saves while the drop is written is newer than the last
+// imported play, so the drop is taken back.
+func TestReconcileContinueWatchingTakesBackADropRacedByPlayback(t *testing.T) {
+	t.Parallel()
+
+	played := time.Date(2026, 10, 1, 21, 0, 0, 0, time.UTC)
+	drops := &fakeSeriesDrops{
+		seriesOf:        map[string]string{"raced-1": "s-raced", "hidden-1": "s-hidden"},
+		activityAtWrite: map[string]time.Time{"s-raced": reconcileNow.Add(-time.Millisecond)},
+	}
+	service := reconcileService(drops, surfaceAll(drops), nil)
+
+	row := ContinueWatchingRow{SourceSeriesIDs: map[string]bool{}, IncludesNextUp: true, UnfinishedSourceSeries: map[string]bool{"src-raced": true, "src-hidden": true}}
+	episodes := []importedEpisode{
+		{itemID: "raced-1", sourceSeriesID: "src-raced", at: played},
+		{itemID: "hidden-1", sourceSeriesID: "src-hidden", at: played},
+	}
+	dropped, err := service.reconcileContinueWatching(context.Background(), 7, "p", row, episodes)
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if dropped != 1 || !slices.Equal(drops.importedIDs(), []string{"s-hidden"}) {
+		t.Fatalf("kept %d %v, want only s-hidden", dropped, drops.importedIDs())
+	}
+	if len(drops.deleted) != 1 || drops.deleted[0].seriesID != "s-raced" || !drops.deleted[0].droppedAt.Equal(reconcileNow) {
+		t.Fatalf("taken back = %+v, want s-raced fenced on its drop time", drops.deleted)
+	}
+}
+
+// A listed show is recognized by its primary provider ID; a stale secondary
+// ID that names another series doesn't mark that one as listed.
+func TestReconcileContinueWatchingListsByThePrimaryProviderID(t *testing.T) {
+	t.Parallel()
+
+	played := time.Date(2026, 10, 1, 21, 0, 0, 0, time.UTC)
+	drops := &fakeSeriesDrops{seriesOf: map[string]string{"listed-1": "s-listed", "hidden-1": "s-hidden"}}
+	matcherRepo := &matcherRepoStub{mediaByExternal: map[string][]mediaLookupRow{
+		"series:tmdb_id:100": {{ContentID: "s-listed"}},
+		// Stale TVDB ID on the listed Emby series, naming the hidden show.
+		"series:tvdb_id:200": {{ContentID: "s-hidden"}},
+	}}
+	service := reconcileService(drops, surfaceAll(drops), matcherRepo)
+
+	row := ContinueWatchingRow{
+		SourceSeriesIDs:        map[string]bool{"src-listed-copy": true},
+		Series:                 []Record{{ExternalID: "src-listed-copy", Kind: KindSeries, TMDBID: "100", TVDBID: "200", PreferTMDB: true}},
+		IncludesNextUp:         true,
+		UnfinishedSourceSeries: map[string]bool{"src-listed": true, "src-hidden": true},
+	}
+	episodes := []importedEpisode{
+		{itemID: "listed-1", sourceSeriesID: "src-listed", at: played},
+		{itemID: "hidden-1", sourceSeriesID: "src-hidden", at: played},
+	}
+	if _, err := service.reconcileContinueWatching(context.Background(), 7, "p", row, episodes); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := drops.importedIDs(); !slices.Equal(got, []string{"s-hidden"}) {
+		t.Fatalf("dropped %v, want s-hidden despite the stale secondary ID", got)
+	}
+}
+
+// Episodes are resolved to their series in one batch.
+func TestReconcileContinueWatchingResolvesEpisodesInOneBatch(t *testing.T) {
+	t.Parallel()
+
+	played := time.Date(2026, 10, 1, 21, 0, 0, 0, time.UTC)
+	drops := &fakeSeriesDrops{seriesOf: map[string]string{"a": "s-1", "b": "s-1", "c": "s-2"}}
+	service := reconcileService(drops, surfaceAll(drops), nil)
+
+	row := ContinueWatchingRow{SourceSeriesIDs: map[string]bool{}, IncludesNextUp: true, UnfinishedSourceSeries: map[string]bool{"src-1": true, "src-2": true}}
+	episodes := []importedEpisode{
+		{itemID: "a", sourceSeriesID: "src-1", at: played},
+		{itemID: "b", sourceSeriesID: "src-1", at: played},
+		{itemID: "a", sourceSeriesID: "src-1", at: played},
+		{itemID: "c", sourceSeriesID: "src-2", at: played},
+	}
+	if _, err := service.reconcileContinueWatching(context.Background(), 7, "p", row, episodes); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if drops.resolveCalls != 1 {
+		t.Fatalf("resolve calls = %d, want 1", drops.resolveCalls)
+	}
+	if got := drops.importedIDs(); !slices.Equal(got, []string{"s-1", "s-2"}) {
+		t.Fatalf("dropped %v, want both shows", got)
 	}
 }
 

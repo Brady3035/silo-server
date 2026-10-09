@@ -54,13 +54,17 @@ leaves out, as Silo's own Next Up dismissal drops a series.
   series of the imported episodes, or by the listed series' provider IDs, which mark every
   Silo series with that ID. A listed show the run imported nothing of and that has no
   provider ID stops the pass, since it could be a copy of any of them.
-- The drop is dated at the run, or at the show's last imported play when the source's clock
-  is ahead, so the next playback, in Silo or at the source followed by another import,
-  ends it. A source clock behind Silo's can stamp a later play before the drop, which then
-  stays until the show is played in Silo. A show with Silo activity newer than its last imported play is
-  skipped, as is one with an active drop or one the profile dropped and watched again
-  after that play. An ended drop older than that play is replaced, fenced on its
-  `dropped_at`. Re-running an import drops nothing new.
+- The drop is dated at the run, taken before Silo activity is read, so the next playback,
+  in Silo or at the source followed by another import, ends it. A show with Silo activity
+  newer than its last imported play is skipped, as is one with an active drop or one the
+  profile dropped and watched again after that play. After writing, the pass reads activity
+  again and takes back, fenced on its `dropped_at`, any drop that playback saved in the
+  meantime would otherwise keep. An ended drop older than that play is replaced, fenced on
+  its `dropped_at`. A show whose last play at the source is stamped after Silo's clock is
+  left for a later import. Re-running an import drops nothing new.
+- Listed shows are matched by provider ID in the matcher's order (TMDB first, then TVDB,
+  then IMDb), and every Silo series with the first ID that matches counts as listed.
+  Imported episodes are resolved to their series in batches.
 - Drops sync to watch providers that support dropped shows, like any other drop.
 - Without the row, or when it lists an episode without a series, or when series metadata
   could not be read, nothing is dropped; the per-episode dismissals above still apply. A
