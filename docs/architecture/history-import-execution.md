@@ -62,8 +62,9 @@ leaves out, as Silo's own Next Up dismissal drops a series.
   meantime would otherwise keep. An ended drop older than that play is replaced, fenced on
   its `dropped_at`. A show whose last play at the source is stamped after Silo's clock is
   left for a later import. Re-running an import drops nothing new.
-- Listed shows are matched by provider ID in the matcher's order (TMDB first, then TVDB,
-  then IMDb), and every Silo series with the first ID that matches counts as listed.
+- Listed shows are matched by provider ID in the matcher's order (TVDB, then TMDB, then
+  IMDb, or TMDB first when the record prefers TMDB), and every Silo series with the first
+  ID that matches counts as listed.
   Imported episodes are resolved to their series in batches.
 - Drops sync to watch providers that support dropped shows, like any other drop.
 - Without the row, or when it lists an episode without a series, or when series metadata
