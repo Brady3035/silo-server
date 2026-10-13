@@ -373,3 +373,25 @@ func TestDetailImageTagsFollowLocalizedArtwork(t *testing.T) {
 			english.ImageTags["Primary"], backdrop(english), list.ImageTags["Primary"], backdrop(list))
 	}
 }
+
+// Episode detail carries no stored still path, so a thumbhash alone must not
+// seed its tags: a replaced still with the same thumbhash would keep the old
+// tag. Its tags follow the presigned URL, as before.
+func TestEpisodeDetailTagsFollowURLWithoutStoredPath(t *testing.T) {
+	m := newMapper(NewResourceIDCodec(), &config.Config{Auth: config.AuthConfig{JWTSecret: "image-secret"}})
+	episode := func(still, backdrop string) baseItemDTO {
+		return m.itemFromDetail(itemDetailToUpstream(&catalog.ItemDetail{
+			ContentID: "ep-1", Type: "episode", Title: "Pilot",
+			PosterURL: still, PosterThumbhash: "same-still-th",
+			BackdropURL: backdrop, BackdropThumbhash: "same-backdrop-th",
+		}), false, nil)
+	}
+	before := episode("https://cdn.example.test/still-old.webp", "https://cdn.example.test/backdrop-old.webp")
+	after := episode("https://cdn.example.test/still-new.webp", "https://cdn.example.test/backdrop-new.webp")
+	if before.ImageTags["Primary"] == "" || before.ImageTags["Primary"] == after.ImageTags["Primary"] {
+		t.Fatalf("replaced still kept Primary tag %q", before.ImageTags["Primary"])
+	}
+	if len(before.BackdropImageTags) == 0 || len(after.BackdropImageTags) == 0 || before.BackdropImageTags[0] == after.BackdropImageTags[0] {
+		t.Fatalf("replaced backdrop kept its tag: %v -> %v", before.BackdropImageTags, after.BackdropImageTags)
+	}
+}
