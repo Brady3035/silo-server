@@ -68,7 +68,7 @@ export function EgressWidget() {
               Total {formatDataTotal(totalBytes)}
             </span>
           ) : null}
-          <span className="text-muted-foreground shrink-0 text-[11px] whitespace-nowrap tabular-nums">
+          <span className="text-muted-foreground text-[11px] tabular-nums">
             Peak {formatMbps(peak)}
           </span>
           <WidgetRangePicker />

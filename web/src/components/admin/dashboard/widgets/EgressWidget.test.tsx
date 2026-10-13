@@ -68,6 +68,11 @@ describe("EgressWidget", () => {
     expect(total.closest('[data-slot="card-header"]')?.className).toContain(
       "@container/card-header",
     );
+    // With the total gone, Peak must still be free to wrap; holding it on one
+    // line pushes the range picker out of a minimum-span card.
+    const peak = screen.getByText("Peak 56 Mbps");
+    expect(peak.classList).not.toContain("whitespace-nowrap");
+    expect(peak.classList).not.toContain("shrink-0");
   });
 
   it("shows a zero total, which is a real answer", () => {
