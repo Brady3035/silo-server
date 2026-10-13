@@ -47,20 +47,26 @@ describe("EgressWidget", () => {
 
     render(<EgressWidget />);
 
-    const total = screen.getByText("Total 1.4 TB");
-    expect(total.getAttribute("title")).toMatch(/^About 1\.4 TB served over /);
+    expect(screen.getByText("Total 1.4 TB")).toBeTruthy();
     expect(screen.getByText("Peak 56 Mbps")).toBeTruthy();
   });
 
-  it("breaks out download traffic in the tooltip when there was some", () => {
-    mocks.useAdminTimeseries.mockReturnValue({
-      data: series({ egress_bytes: 1_400_000_000_000, download_egress_bytes: 37_800_000_000 }),
-    });
+  // jsdom does not evaluate container queries, so this pins the contract
+  // instead: hidden by default, shown only once the card header is wide
+  // enough, and never truncated or carrying hover-only details.
+  it("drops the total, rather than truncating it, in a narrow header", () => {
+    mocks.useAdminTimeseries.mockReturnValue({ data: series({ egress_bytes: 1_400_000_000_000 }) });
 
     render(<EgressWidget />);
 
-    expect(screen.getByText("Total 1.4 TB").getAttribute("title")).toMatch(
-      /^About 1\.4 TB \(37\.8 GB of it downloads\) served over /,
+    const total = screen.getByText("Total 1.4 TB");
+    expect(total.classList).toContain("hidden");
+    expect(total.classList).toContain("@md/card-header:inline");
+    expect(total.classList).toContain("whitespace-nowrap");
+    expect(total.classList).not.toContain("truncate");
+    expect(total.getAttribute("title")).toBeNull();
+    expect(total.closest('[data-slot="card-header"]')?.className).toContain(
+      "@container/card-header",
     );
   });
 
@@ -79,17 +85,5 @@ describe("EgressWidget", () => {
 
     expect(screen.queryByText(/^Total /)).toBeNull();
     expect(screen.getByText("Peak 56 Mbps")).toBeTruthy();
-  });
-
-  it("says when sampling began inside the window", () => {
-    const data = series({ egress_bytes: 2_000_000 });
-    data.oldest_sample_at = new Date(Date.parse(data.from) + 6 * HOUR_MS).toISOString();
-    mocks.useAdminTimeseries.mockReturnValue({ data });
-
-    render(<EgressWidget />);
-
-    expect(screen.getByText("Total 2.0 MB").getAttribute("title")).toMatch(
-      /^About 2\.0 MB served since .+, when sampling began\./,
-    );
   });
 });

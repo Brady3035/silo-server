@@ -54,26 +54,6 @@ export function EgressWidget() {
   // Integrated server-side from every sampled minute; summing `points` here
   // would be wrong, since wide windows carry each bucket's peak minute.
   const totalBytes = query.data?.egress_bytes;
-  const totalTitle = useMemo(() => {
-    if (totalBytes == null) {
-      return undefined;
-    }
-    const downloadBytes = query.data?.download_egress_bytes ?? 0;
-    const total =
-      downloadBytes > 0
-        ? `${formatDataTotal(totalBytes)} (${formatDataTotal(downloadBytes)} of it downloads)`
-        : formatDataTotal(totalBytes);
-    const caveat = "Estimated from per-minute samples; minutes the sampler missed are not counted.";
-    // A sampler younger than the window (a fresh install, a 30 d view on a
-    // week of data) covers less than the title claims — say so.
-    const from = Date.parse(query.data?.from ?? "");
-    const oldest = Date.parse(query.data?.oldest_sample_at ?? "");
-    if (Number.isFinite(from) && Number.isFinite(oldest) && oldest > from) {
-      const since = formatRangeTimestamp(range, oldest, { withTime: true });
-      return `About ${total} served since ${since}, when sampling began. ${caveat}`;
-    }
-    return `About ${total} served over ${rangePhrase(range)}. ${caveat}`;
-  }, [totalBytes, query.data, range]);
 
   return (
     <Card className="h-full">
@@ -81,12 +61,10 @@ export function EgressWidget() {
         <CardTitle className="text-sm font-bold">{rangeTitle("Egress", range)}</CardTitle>
         <div className="flex min-w-0 items-center gap-2">
           {totalBytes != null ? (
-            // Shrinks and truncates first, so a narrow widget keeps the peak
-            // and the range picker; the title still carries the full value.
-            <span
-              className="text-muted-foreground min-w-0 truncate text-[11px] tabular-nums"
-              title={totalTitle}
-            >
+            // Secondary to the peak: when the header is too narrow for both
+            // beside the range picker, the total is dropped rather than
+            // truncated. CardHeader is the `card-header` container.
+            <span className="text-muted-foreground hidden text-[11px] whitespace-nowrap tabular-nums @md/card-header:inline">
               Total {formatDataTotal(totalBytes)}
             </span>
           ) : null}
