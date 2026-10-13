@@ -13825,10 +13825,6 @@ export interface components {
       watch_providers: components["schemas"]["AdminDashboardWatchProviderStats"][];
     };
     AdminDashboardTimeseries: {
-      /** Format: int64 */
-      download_egress_bytes: number;
-      /** Format: int64 */
-      egress_bytes: number;
       /**
        * Format: date-time
        * @description RFC 3339 instant in UTC with millisecond precision

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAdminTimeseries } from "@/hooks/queries/admin/dashboardInsights";
-import { formatDataTotal, formatMbps, formatMbpsValue } from "../format";
+import { formatMbps, formatMbpsValue } from "../format";
 import {
   formatRangeTimestamp,
   rangeEdgeLabels,
@@ -51,46 +51,13 @@ export function EgressWidget() {
   );
 
   const peak = points.reduce((max, point) => Math.max(max, point.value ?? 0), 0);
-  // Integrated server-side from every sampled minute; summing `points` here
-  // would be wrong, since wide windows carry each bucket's peak minute.
-  const totalBytes = query.data?.egress_bytes;
-  const totalTitle = useMemo(() => {
-    if (totalBytes == null) {
-      return undefined;
-    }
-    const downloadBytes = query.data?.download_egress_bytes ?? 0;
-    const total =
-      downloadBytes > 0
-        ? `${formatDataTotal(totalBytes)} (${formatDataTotal(downloadBytes)} of it downloads)`
-        : formatDataTotal(totalBytes);
-    const caveat = "Estimated from per-minute samples; minutes the sampler missed are not counted.";
-    // A sampler younger than the window (a fresh install, a 30 d view on a
-    // week of data) covers less than the title claims — say so.
-    const from = Date.parse(query.data?.from ?? "");
-    const oldest = Date.parse(query.data?.oldest_sample_at ?? "");
-    if (Number.isFinite(from) && Number.isFinite(oldest) && oldest > from) {
-      const since = formatRangeTimestamp(range, oldest, { withTime: true });
-      return `About ${total} served since ${since}, when sampling began. ${caveat}`;
-    }
-    return `About ${total} served over ${rangePhrase(range)}. ${caveat}`;
-  }, [totalBytes, query.data, range]);
 
   return (
     <Card className="h-full">
       <CardHeader className="flex shrink-0 flex-row items-center justify-between gap-2 space-y-0 pb-3">
         <CardTitle className="text-sm font-bold">{rangeTitle("Egress", range)}</CardTitle>
         <div className="flex min-w-0 items-center gap-2">
-          {totalBytes != null ? (
-            // Shrinks and truncates first, so a narrow widget keeps the peak
-            // and the range picker; the title still carries the full value.
-            <span
-              className="text-muted-foreground min-w-0 truncate text-[11px] tabular-nums"
-              title={totalTitle}
-            >
-              Total {formatDataTotal(totalBytes)}
-            </span>
-          ) : null}
-          <span className="text-muted-foreground shrink-0 text-[11px] whitespace-nowrap tabular-nums">
+          <span className="text-muted-foreground text-[11px] tabular-nums">
             Peak {formatMbps(peak)}
           </span>
           <WidgetRangePicker />
