@@ -185,3 +185,105 @@ func TestApplySeriesImagesUsesCanonicalSeriesSeeds(t *testing.T) {
 		t.Fatalf("ParentThumbImageTag = %q, want %q", dto.ParentThumbImageTag, expectedBackdrop)
 	}
 }
+
+// An episode's show logo is found through ParentLogoItemId, as Jellyfin
+// sets it; clients never look for a logo on the episode itself.
+func TestApplySeriesImagesSetsParentLogo(t *testing.T) {
+	codec := NewResourceIDCodec()
+	secret := "logo-secret"
+	updatedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	seriesRouteID := codec.EncodeStringID(EncodedIDItem, "series:tvdb:75805")
+	dto := baseItemDTO{SeriesID: seriesRouteID}
+	series := seriesImageSet{
+		ContentID: "series:tvdb:75805",
+		LogoURL:   "/api/v2/artwork/tvdb/series/75805/logo/w500.abc.webp?exp=1&sig=x",
+		LogoPath:  "tvdb/series/75805/logo.png",
+		UpdatedAt: updatedAt,
+	}
+
+	newMapper(codec, &config.Config{
+		Auth: config.AuthConfig{JWTSecret: secret},
+	}).applySeriesImages(&dto, series)
+
+	want := newImageTagSigner(secret).Tag(
+		imageTagSeed(series.ContentID, "Logo", compatCardImageSize, series.LogoPath, "", updatedAt),
+		series.LogoURL,
+	)
+	if dto.ParentLogoItemID != seriesRouteID {
+		t.Fatalf("ParentLogoItemID = %q, want the series id %q", dto.ParentLogoItemID, seriesRouteID)
+	}
+	if dto.ParentLogoImageTag == "" || dto.ParentLogoImageTag != want {
+		t.Fatalf("ParentLogoImageTag = %q, want %q", dto.ParentLogoImageTag, want)
+	}
+
+	// The tag names the same image as the series' own ImageTags["Logo"].
+	seriesDTO := newMapper(codec, &config.Config{Auth: config.AuthConfig{JWTSecret: secret}}).itemFromList(upstreamListItem{
+		ContentID: series.ContentID, Type: "series", Title: "Show",
+		LogoURL: series.LogoURL, LogoPath: series.LogoPath, UpdatedAt: updatedAt,
+	}, false, nil, nil)
+	if seriesDTO.ImageTags["Logo"] != dto.ParentLogoImageTag {
+		t.Fatalf("series Logo tag %q differs from the episode's ParentLogoImageTag %q", seriesDTO.ImageTags["Logo"], dto.ParentLogoImageTag)
+	}
+
+	// A series without a logo leaves the episode without one.
+	bare := baseItemDTO{SeriesID: seriesRouteID}
+	newMapper(codec, &config.Config{Auth: config.AuthConfig{JWTSecret: secret}}).applySeriesImages(&bare, seriesImageSet{ContentID: series.ContentID})
+	if bare.ParentLogoItemID != "" || bare.ParentLogoImageTag != "" {
+		t.Fatalf("ParentLogo set without a series logo: %q %q", bare.ParentLogoItemID, bare.ParentLogoImageTag)
+	}
+}
+
+// List paths (Resume, Next Up, episode lists, collections) give episodes their
+// series artwork through applyCompatEpisodeTarget; the logo comes with it and
+// is remembered for the series image route.
+func TestApplyCompatEpisodeTargetCarriesSeriesLogo(t *testing.T) {
+	codec := NewResourceIDCodec()
+	images := NewImageCache(time.Hour, time.Now)
+	h := &ItemsHandler{codec: codec, mapper: newMapper(codec, &config.Config{}), images: images}
+	seriesRouteID := codec.EncodeStringID(EncodedIDItem, "series-1")
+	dto := baseItemDTO{ID: codec.EncodeStringID(EncodedIDItem, "ep-1"), SeriesID: seriesRouteID}
+	target := compatEpisodeTarget{SeriesImages: seriesImageSet{
+		ContentID: "series-1",
+		LogoURL:   "https://cdn.example.test/series-1-logo.png?sig=one",
+		LogoPath:  "metadb://logo/series-1",
+	}}
+
+	h.applyCompatEpisodeTarget(&dto, target)
+
+	if dto.ParentLogoItemID != seriesRouteID || dto.ParentLogoImageTag == "" {
+		t.Fatalf("ParentLogo = %q %q, want the series id and a tag", dto.ParentLogoItemID, dto.ParentLogoImageTag)
+	}
+	if got, ok := images.LookupSized(seriesRouteID, "Logo", "", compatCardImageSize); !ok || got != target.SeriesImages.LogoURL {
+		t.Fatalf("remembered series logo = %q, %v; want %q", got, ok, target.SeriesImages.LogoURL)
+	}
+}
+
+// ParentLogo follows the request's image controls like the other logo tags.
+func TestItemsResponseOptionsStripParentLogo(t *testing.T) {
+	withLogo := func() []baseItemDTO {
+		return []baseItemDTO{{ParentLogoItemID: "series-1", ParentLogoImageTag: "logo-tag"}}
+	}
+	zero := 0
+	cases := []struct {
+		name  string
+		query itemsQuery
+		keep  bool
+	}{
+		{"no controls", itemsQuery{}, true},
+		{"logo requested", itemsQuery{enableImageTypes: map[string]bool{"primary": true, "logo": true}}, true},
+		{"logo not requested", itemsQuery{enableImageTypes: map[string]bool{"primary": true, "backdrop": true}}, false},
+		{"images disabled", itemsQuery{disableImages: true}, false},
+		{"image type limit zero", itemsQuery{imageTypeLimit: &zero}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			items := withLogo()
+			applyItemsResponseOptions(items, tc.query)
+			kept := items[0].ParentLogoItemID != "" && items[0].ParentLogoImageTag != ""
+			cleared := items[0].ParentLogoItemID == "" && items[0].ParentLogoImageTag == ""
+			if tc.keep && !kept || !tc.keep && !cleared {
+				t.Fatalf("ParentLogo = %q %q, keep=%v", items[0].ParentLogoItemID, items[0].ParentLogoImageTag, tc.keep)
+			}
+		})
+	}
+}

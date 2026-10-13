@@ -489,6 +489,8 @@ func TestHandleItem_Episode_FetchesSeriesDetailForStableParentImageTags(t *testi
 			Title:       "Test Series",
 			PosterURL:   "/img/series-1-poster.jpg",
 			BackdropURL: "/img/series-1-backdrop.jpg",
+			LogoURL:     "/img/series-1-logo.png",
+			LogoPath:    "metadb://logo/series-1",
 		},
 	}
 
@@ -534,6 +536,11 @@ func TestHandleItem_Episode_FetchesSeriesDetailForStableParentImageTags(t *testi
 		item.ParentBackdropImageTags[0] == "" || item.ParentThumbItemID != encodedSeriesID ||
 		item.ParentThumbImageTag != item.ParentBackdropImageTags[0] {
 		t.Fatalf("episode response lost parent backdrop identity or tag: %+v", item)
+	}
+	seriesLogoTag := h.mapper.itemFromDetail(*contentSvc.seriesDetail, false, nil).ImageTags["Logo"]
+	if item.ParentLogoItemID != encodedSeriesID || item.ParentLogoImageTag == "" || item.ParentLogoImageTag != seriesLogoTag {
+		t.Fatalf("episode response lost the series logo: id=%q tag=%q, want %q and the series Logo tag %q",
+			item.ParentLogoItemID, item.ParentLogoImageTag, encodedSeriesID, seriesLogoTag)
 	}
 }
 

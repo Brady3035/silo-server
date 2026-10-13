@@ -3427,6 +3427,7 @@ func (h *ItemsHandler) rememberCompatEpisodeImages(dto baseItemDTO, stillURL str
 	if dto.SeriesID != "" {
 		h.images.RememberSized(dto.SeriesID, "Primary", series.PosterURL, compatCardImageSize)
 		h.images.RememberSized(dto.SeriesID, "Backdrop", series.BackdropURL, compatCardImageSize)
+		h.images.RememberSized(dto.SeriesID, "Logo", series.LogoURL, compatCardImageSize)
 	}
 }
 
@@ -3765,6 +3766,8 @@ func (h *ItemsHandler) enrichEpisodeSeriesImages(ctx context.Context, session *S
 				BackdropURL:       detail.BackdropURL,
 				BackdropPath:      detail.BackdropPath,
 				BackdropThumbhash: detail.BackdropThumbhash,
+				LogoURL:           detail.LogoURL,
+				LogoPath:          detail.LogoPath,
 				UpdatedAt:         detail.UpdatedAt,
 			}
 			h.rememberDetailImages(*detail)
@@ -3894,6 +3897,10 @@ func applyItemsResponseOptions(items []baseItemDTO, query itemsQuery) {
 		if !allowed("thumb") {
 			dto.ParentThumbImageTag = ""
 			dto.ParentThumbItemID = ""
+		}
+		if !allowed("logo") {
+			dto.ParentLogoImageTag = ""
+			dto.ParentLogoItemID = ""
 		}
 		if imagesOff {
 			dto.ImageBlurHashes = nil
