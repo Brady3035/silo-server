@@ -1487,6 +1487,8 @@ func itemDetailToUpstream(d *catalog.ItemDetail) upstreamItemDetail {
 		ClearArtPath:       d.ClearArtPath,
 		DiscPath:           d.DiscPath,
 		ExtraBackdropPaths: d.ExtraBackdropPaths,
+		LogoPath:           d.LogoPath,
+		UpdatedAt:          d.UpdatedAt,
 	}
 	if detail.Genres == nil {
 		detail.Genres = []string{}

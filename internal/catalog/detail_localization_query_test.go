@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Silo-Server/silo-server/internal/access"
 	"github.com/Silo-Server/silo-server/internal/models"
@@ -217,5 +218,22 @@ func BenchmarkBuildMediaItemDetailLocalization(b *testing.B) {
 			b.ReportMetric(float64(tracer.localizations)/float64(b.N), "localization-queries/op")
 			b.ReportMetric(float64(tracer.folders+tracer.folderPaths+tracer.localizations)/float64(b.N), "SQL-queries/op")
 		})
+	}
+}
+
+// The Jellyfin-compatible surface seeds an item's logo tag from its stored
+// logo path and modification time, as list rows do, so detail carries both.
+func TestBuildMediaItemDetailCarriesLogoTagSeed(t *testing.T) {
+	service, _, _ := detailLocalizationFixture(t)
+	item := localizationDetailItem("translated", "Base overview")
+	item.LogoPath = "local/series/translated/aa/logo/original.r1.webp"
+	item.UpdatedAt = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+
+	detail, err := service.buildMediaItemDetail(t.Context(), item, item.ContentID, AccessFilter{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.LogoPath != item.LogoPath || !detail.UpdatedAt.Equal(item.UpdatedAt) {
+		t.Fatalf("logo seed = (%q, %v), want (%q, %v)", detail.LogoPath, detail.UpdatedAt, item.LogoPath, item.UpdatedAt)
 	}
 }

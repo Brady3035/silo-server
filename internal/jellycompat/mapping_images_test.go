@@ -1,9 +1,11 @@
 package jellycompat
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/Silo-Server/silo-server/internal/catalog"
 	"github.com/Silo-Server/silo-server/internal/config"
 )
 
@@ -285,5 +287,42 @@ func TestItemsResponseOptionsStripParentLogo(t *testing.T) {
 				t.Fatalf("ParentLogo = %q %q, keep=%v", items[0].ParentLogoItemID, items[0].ParentLogoImageTag, tc.keep)
 			}
 		})
+	}
+}
+
+// Episode detail builds the series image set from the series' catalog detail.
+// Its ParentLogoImageTag must match the one lists give the same episode, and
+// must not change when the logo's presigned URL is signed again.
+func TestEpisodeDetailParentLogoMatchesListsAcrossPresigns(t *testing.T) {
+	codec := NewResourceIDCodec()
+	m := newMapper(codec, &config.Config{Auth: config.AuthConfig{JWTSecret: "logo-secret"}})
+	updatedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	seriesRouteID := codec.EncodeStringID(EncodedIDItem, "series-1")
+	const logoPath = "local/series/series-1/aa/logo/original.r1.webp"
+
+	detailTag := func(presignedURL string) string {
+		// The production content service hands enrichEpisodeSeriesImages a
+		// catalog detail converted by itemDetailToUpstream.
+		series := itemDetailToUpstream(&catalog.ItemDetail{
+			ContentID: "series-1", Type: "series", Title: "Show",
+			LogoURL: presignedURL, LogoPath: logoPath, UpdatedAt: updatedAt,
+		})
+		h := &ItemsHandler{content: &countingContentService{seriesDetail: &series}, codec: codec, mapper: m, images: NewImageCache(time.Hour, time.Now)}
+		dto := baseItemDTO{SeriesID: seriesRouteID}
+		h.enrichEpisodeSeriesImages(context.Background(), &Session{}, &dto, "series-1", map[string]seriesImageSet{})
+		return dto.ParentLogoImageTag
+	}
+	first := detailTag("https://cdn.example.test/logo.webp?exp=1&sig=a")
+	resigned := detailTag("https://cdn.example.test/logo.webp?exp=2&sig=b")
+	if first == "" || first != resigned {
+		t.Fatalf("detail ParentLogoImageTag changed with the presigned URL: %q then %q", first, resigned)
+	}
+
+	listDTO := baseItemDTO{SeriesID: seriesRouteID}
+	m.applySeriesImages(&listDTO, seriesImageSet{
+		ContentID: "series-1", LogoURL: "https://cdn.example.test/logo.webp?exp=3&sig=c", LogoPath: logoPath, UpdatedAt: updatedAt,
+	})
+	if listDTO.ParentLogoImageTag != first {
+		t.Fatalf("detail tag %q differs from the list tag %q for the same series logo", first, listDTO.ParentLogoImageTag)
 	}
 }

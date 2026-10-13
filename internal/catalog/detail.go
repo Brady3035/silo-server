@@ -262,6 +262,14 @@ type ItemDetail struct {
 	DiscPath           string   `json:"-"`
 	ExtraBackdropPaths []string `json:"-"`
 
+	// The stored logo path and the item's last modification, kept out of the
+	// JSON contract like the paths above. They seed the Jellyfin-compatible
+	// logo tag the way list rows do, so a logo keeps one tag across list and
+	// detail responses instead of one derived from its presigned URL. Set for
+	// movies and series.
+	LogoPath  string    `json:"-"`
+	UpdatedAt time.Time `json:"-"`
+
 	// Literary work linkage. Present for linked ebook/audiobook items.
 	WorkID      string              `json:"work_id,omitempty"`
 	WorkTitle   string              `json:"work_title,omitempty"`
@@ -2262,6 +2270,8 @@ func (s *DetailService) buildMediaItemDetail(ctx context.Context, item *models.M
 	detail.PosterURL = s.PresignImageURL(ctx, item.PosterPath, "poster", string(filter.ImageSize))
 	detail.BackdropURL = s.PresignImageURL(ctx, item.BackdropPath, "backdrop", string(filter.ImageSize))
 	detail.LogoURL = s.PresignImageURL(ctx, item.LogoPath, "logo", string(filter.ImageSize))
+	detail.LogoPath = item.LogoPath
+	detail.UpdatedAt = item.UpdatedAt
 	copyExtraArtwork(detail, item)
 
 	// File versions and subtitle aggregation only apply to movies.
