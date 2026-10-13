@@ -4348,6 +4348,9 @@
           "downloads_stats": {
             "type": "boolean"
           },
+          "egress_totals": {
+            "type": "boolean"
+          },
           "health": {
             "type": "boolean"
           },
@@ -4393,6 +4396,7 @@
           "log_level_list",
           "watch_providers",
           "downloads_stats",
+          "egress_totals",
           "revision",
           "state",
           "allowed"
@@ -4661,6 +4665,14 @@
       "AdminDashboardTimeseries": {
         "additionalProperties": false,
         "properties": {
+          "download_egress_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "egress_bytes": {
+            "format": "int64",
+            "type": "integer"
+          },
           "from": {
             "description": "RFC 3339 instant in UTC with millisecond precision",
             "format": "date-time",
@@ -4701,6 +4713,8 @@
           "from",
           "to",
           "oldest_sample_at",
+          "egress_bytes",
+          "download_egress_bytes",
           "points"
         ],
         "type": "object"

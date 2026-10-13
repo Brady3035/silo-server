@@ -13708,6 +13708,7 @@ export interface components {
       /** @description Whether the current principal may use the capability */
       allowed: boolean;
       downloads_stats: boolean;
+      egress_totals: boolean;
       health: boolean;
       log_level_list: boolean;
       playback_activity: boolean;
@@ -13825,6 +13826,10 @@ export interface components {
       watch_providers: components["schemas"]["AdminDashboardWatchProviderStats"][];
     };
     AdminDashboardTimeseries: {
+      /** Format: int64 */
+      download_egress_bytes: number;
+      /** Format: int64 */
+      egress_bytes: number;
       /**
        * Format: date-time
        * @description RFC 3339 instant in UTC with millisecond precision
