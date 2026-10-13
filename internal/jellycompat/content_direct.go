@@ -1487,8 +1487,16 @@ func itemDetailToUpstream(d *catalog.ItemDetail) upstreamItemDetail {
 		ClearArtPath:       d.ClearArtPath,
 		DiscPath:           d.DiscPath,
 		ExtraBackdropPaths: d.ExtraBackdropPaths,
-		LogoPath:           d.LogoPath,
-		UpdatedAt:          d.UpdatedAt,
+		// The stored paths and thumbhashes seed the image tags alongside
+		// UpdatedAt; without them the timestamp alone would give every
+		// language's artwork, and every artwork update that leaves the item
+		// row alone, the same tag.
+		PosterPath:        d.PosterPath,
+		PosterThumbhash:   d.PosterThumbhash,
+		BackdropPath:      d.BackdropPath,
+		BackdropThumbhash: d.BackdropThumbhash,
+		LogoPath:          d.LogoPath,
+		UpdatedAt:         d.UpdatedAt,
 	}
 	if detail.Genres == nil {
 		detail.Genres = []string{}

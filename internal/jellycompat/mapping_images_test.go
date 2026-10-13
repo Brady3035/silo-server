@@ -326,3 +326,50 @@ func TestEpisodeDetailParentLogoMatchesListsAcrossPresigns(t *testing.T) {
 		t.Fatalf("detail tag %q differs from the list tag %q for the same series logo", first, listDTO.ParentLogoImageTag)
 	}
 }
+
+// Movie and series detail tags are seeded from the stored artwork, as list
+// tags are. The update time alone must not decide them: a localization swaps
+// in another language's poster and backdrop without touching the item row,
+// and each language's artwork needs its own tag.
+func TestDetailImageTagsFollowLocalizedArtwork(t *testing.T) {
+	codec := NewResourceIDCodec()
+	m := newMapper(codec, &config.Config{Auth: config.AuthConfig{JWTSecret: "image-secret"}})
+	updatedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	detail := func(lang, url string) baseItemDTO {
+		return m.itemFromDetail(itemDetailToUpstream(&catalog.ItemDetail{
+			ContentID: "movie-1", Type: "movie", Title: "Movie", UpdatedAt: updatedAt,
+			PosterURL: "https://cdn.example.test/" + lang + "/poster.webp?" + url, PosterPath: "tmdb/" + lang + "/poster.jpg", PosterThumbhash: lang + "-poster",
+			BackdropURL: "https://cdn.example.test/" + lang + "/backdrop.webp?" + url, BackdropPath: "tmdb/" + lang + "/backdrop.jpg", BackdropThumbhash: lang + "-backdrop",
+		}), false, nil)
+	}
+	backdrop := func(dto baseItemDTO) string {
+		if len(dto.BackdropImageTags) == 0 {
+			return ""
+		}
+		return dto.BackdropImageTags[0]
+	}
+
+	english, french := detail("en", "sig=a"), detail("fr", "sig=a")
+	if english.ImageTags["Primary"] == "" || english.ImageTags["Primary"] == french.ImageTags["Primary"] {
+		t.Fatalf("English and French posters share Primary tag %q", english.ImageTags["Primary"])
+	}
+	if backdrop(english) == "" || backdrop(english) == backdrop(french) {
+		t.Fatalf("English and French backdrops share tag %q", backdrop(english))
+	}
+
+	// The same artwork keeps its tag when its URL is signed again.
+	if resigned := detail("en", "sig=b"); resigned.ImageTags["Primary"] != english.ImageTags["Primary"] || backdrop(resigned) != backdrop(english) {
+		t.Fatalf("detail tags changed with the presigned URL: primary %q -> %q", english.ImageTags["Primary"], resigned.ImageTags["Primary"])
+	}
+
+	// And it gets the tag a list row gives it.
+	list := m.itemFromList(upstreamListItem{
+		ContentID: "movie-1", Type: "movie", Title: "Movie", UpdatedAt: updatedAt,
+		PosterURL: "https://cdn.example.test/en/poster.webp?sig=c", PosterPath: "tmdb/en/poster.jpg", PosterThumbhash: "en-poster",
+		BackdropURL: "https://cdn.example.test/en/backdrop.webp?sig=c", BackdropPath: "tmdb/en/backdrop.jpg", BackdropThumbhash: "en-backdrop",
+	}, false, nil, nil)
+	if list.ImageTags["Primary"] != english.ImageTags["Primary"] || backdrop(list) != backdrop(english) {
+		t.Fatalf("detail tags (%q, %q) differ from list tags (%q, %q) for the same artwork",
+			english.ImageTags["Primary"], backdrop(english), list.ImageTags["Primary"], backdrop(list))
+	}
+}
