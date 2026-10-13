@@ -114,6 +114,56 @@ func TestAssembleTimeseries(t *testing.T) {
 	}
 }
 
+func TestSumTransferredBytes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		rows         []timeseriesRow
+		wantEgress   int64
+		wantDownload int64
+	}{
+		{
+			name: "no samples transfer nothing",
+		},
+		{
+			// One minute at 8 kbps is 8,000 bits/s for 60 s: 60,000 bytes.
+			name:       "one minute converts kbps to bytes",
+			rows:       []timeseriesRow{{EgressKbpsSum: 8}},
+			wantEgress: 60_000,
+		},
+		{
+			// The totals integrate the per-minute sums, never the bucket
+			// peaks: a bucket whose peak minute hit 1,000 kbps but whose
+			// minutes added up to 1,200 kbps moved 1,200 kbps-minutes.
+			name: "buckets integrate the sum, not the peak",
+			rows: []timeseriesRow{
+				{EgressKbps: 1_000, EgressKbpsSum: 1_200, DownloadEgressKbps: 400, DownloadEgressKbpsSum: 500},
+				{EgressKbps: 50, EgressKbpsSum: 50},
+			},
+			wantEgress:   1_250 * bytesPerKbpsMinute,
+			wantDownload: 500 * bytesPerKbpsMinute,
+		},
+		{
+			// A month of minutes at 10 Gbps must not overflow.
+			name:       "a busy month fits in int64",
+			rows:       []timeseriesRow{{EgressKbpsSum: 10_000_000 * 31 * 24 * 60}},
+			wantEgress: 10_000_000 * 31 * 24 * 60 * bytesPerKbpsMinute,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			egress, download := sumTransferredBytes(tt.rows)
+			if egress != tt.wantEgress || download != tt.wantDownload {
+				t.Fatalf("sumTransferredBytes = (%d, %d), want (%d, %d)", egress, download, tt.wantEgress, tt.wantDownload)
+			}
+		})
+	}
+}
+
 func TestTimeseriesBucketSeconds(t *testing.T) {
 	t.Parallel()
 
@@ -254,6 +304,8 @@ func TestHandleGetTimeseriesFreshInstallSerializesCollectingState(t *testing.T) 
 		ResolutionSeconds int               `json:"resolution_seconds"`
 		Points            []json.RawMessage `json:"points"`
 		OldestSampleAt    *string           `json:"oldest_sample_at"`
+		EgressBytes       *int64            `json:"egress_bytes"`
+		DownloadBytes     *int64            `json:"download_egress_bytes"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
@@ -269,6 +321,11 @@ func TestHandleGetTimeseriesFreshInstallSerializesCollectingState(t *testing.T) 
 	}
 	if body.ResolutionSeconds != adminTimeseriesResolutionSeconds {
 		t.Fatalf("resolution_seconds = %d, want %d", body.ResolutionSeconds, adminTimeseriesResolutionSeconds)
+	}
+	// The totals are always sent, as zero before the first sample, so the
+	// widget can tell "nothing served" from "server too old to say".
+	if body.EgressBytes == nil || *body.EgressBytes != 0 || body.DownloadBytes == nil || *body.DownloadBytes != 0 {
+		t.Fatalf("egress_bytes = %v, download_egress_bytes = %v, want both present and 0", body.EgressBytes, body.DownloadBytes)
 	}
 }
 

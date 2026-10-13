@@ -1186,6 +1186,12 @@ an average: these charts are read to answer "how bad did it get", and a mean
 would erase exactly that. Stream counts and egress are maxed independently, so
 a bucket's columns may come from different minutes within it.
 
+`egress_bytes` and `download_egress_bytes` are the data served over the whole
+window, integrated from every sampled minute rather than from `points` — summing
+the peak-per-bucket points would count a one-minute spike as if it lasted the
+whole bucket. Unsampled minutes contribute nothing and node egress is a rolling
+average, so treat the totals as a close estimate, not byte-exact accounting.
+
 Each minute holds up to two kinds of row. The `shared` row is the cluster-wide
 snapshot: stream counts by play method, plus the egress reported by enabled,
 healthy stream nodes. Every replica tries to write it and the first one to land
@@ -1228,6 +1234,8 @@ fresh install renders "collecting data" instead of an empty chart.
   "from": "2026-08-25T12:00:00Z",
   "to": "2026-08-26T12:00:00Z",
   "oldest_sample_at": "2026-08-24T09:31:00Z",
+  "egress_bytes": 412500000000,
+  "download_egress_bytes": 37800000000,
   "points": [
     {
       "t": "2026-08-26T11:55:00Z",

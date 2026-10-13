@@ -5007,6 +5007,12 @@ export interface AdminTimeseries {
   from: string;
   to: string;
   oldest_sample_at: string | null;
+  // Data transferred over the whole window, integrated server-side from every
+  // sampled minute (not from `points`, which are per-bucket peaks). An estimate:
+  // node egress is a rolling average and unsampled minutes count as nothing.
+  // Optional because older servers do not send it.
+  egress_bytes?: number;
+  download_egress_bytes?: number;
   points: AdminTimeseriesPoint[];
 }
 
