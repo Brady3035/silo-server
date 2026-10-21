@@ -240,6 +240,11 @@
 # Admin top-activity leaderboards count playback, not marked-watched rows.
 ./internal/api/handlers TestAdminTopActivityCountsPlaybackNotMarks
 
+# Admin playback history keeps the furthest position and the measured watch
+# time across repeated finalizations, and watch totals use that measurement.
+./internal/api/handlers TestPGPlaybackAdminStoreKeepsFurthestFinalizationDB
+./internal/api/handlers TestAdminWatchSummaryDB
+
 # Transactional administrator audit details and rollback isolation.
 ./internal/activitylog TestMutationCommitRollbackAndHistoryDB
 

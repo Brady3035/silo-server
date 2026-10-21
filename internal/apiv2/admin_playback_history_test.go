@@ -30,15 +30,21 @@ func (f *fakeAdminPlaybackHistory) ListAdminPlaybackHistoryPage(_ context.Contex
 		return handlers.AdminPlaybackHistoryPage{}, f.err
 	}
 	duration := 5400.5
+	// A play resumed near its end: watched_seconds is the end position, the
+	// measurement is the two minutes actually watched.
+	start, played, paused := 3480.0, 120.0, 30.0
 	rows := []handlers.AdminPlaybackHistoryRow{{
 		SessionID: "sess-9007199254740993", UserID: 9007199254740993, Username: "laura", ProfileID: "p-owner", ProfileName: "Laura",
 		MediaItemID: "movie-1", MediaFileID: 42, MediaTitle: "Synthetic Movie", MediaType: "movie", PlayMethod: "direct_play",
 		StartedAt: fixedTime().Add(-time.Hour), EndedAt: fixedTime().Add(123456 * time.Nanosecond), WatchedSeconds: 3600, DurationSeconds: &duration, Completed: true,
+		StartPositionSeconds: &start, PlayedSeconds: &played, PausedSeconds: &paused,
 	}}
 	if f.episode {
 		season, episode := 2, 4
 		rows[0].MediaType, rows[0].MediaTitle = "episode", "Synthetic Episode"
 		rows[0].SeriesTitle, rows[0].SeasonNumber, rows[0].EpisodeNumber = "Synthetic Series", &season, &episode
+		// Recorded before watch time was measured.
+		rows[0].StartPositionSeconds, rows[0].PlayedSeconds, rows[0].PausedSeconds = nil, nil, nil
 	}
 	if after != nil {
 		rows = []handlers.AdminPlaybackHistoryRow{}
@@ -129,7 +135,8 @@ func adminPlaybackHistoryFixtureCases() []fixtureCase {
 }
 
 // TestAdminPlaybackHistoryEndedAfterAndSeries covers the window filter the
-// account page uses and the episode placement fields.
+// account page uses, the episode placement fields, and the watch-time fields
+// with and without a measurement.
 func TestAdminPlaybackHistoryEndedAfterAndSeries(t *testing.T) {
 	deps := pilotDeps(nil, nil)
 	fake := new(fakeAdminPlaybackHistory)
@@ -141,7 +148,7 @@ func TestAdminPlaybackHistoryEndedAfterAndSeries(t *testing.T) {
 	if movie.Code != 200 || fake.filter.EndedAfter != nil {
 		t.Fatalf("no window: %d %+v", movie.Code, fake.filter)
 	}
-	for _, want := range []string{`"series_title":""`, `"season_number":null`, `"episode_number":null`} {
+	for _, want := range []string{`"series_title":""`, `"season_number":null`, `"episode_number":null`, `"start_position_seconds":3480`, `"played_seconds":120`, `"paused_seconds":30`} {
 		if !strings.Contains(movie.Body.String(), want) {
 			t.Fatalf("movie row lacks %s: %s", want, movie.Body)
 		}
@@ -156,7 +163,7 @@ func TestAdminPlaybackHistoryEndedAfterAndSeries(t *testing.T) {
 	if fake.filter.EndedAfter == nil || !fake.filter.EndedAfter.Equal(time.Date(2026, 1, 1, 10, 0, 0, 500_000_000, time.UTC)) || fake.filter.EndedAfter.Location() != time.UTC {
 		t.Fatalf("ended_after not parsed into the filter: %+v", fake.filter.EndedAfter)
 	}
-	for _, want := range []string{`"series_title":"Synthetic Series"`, `"season_number":2`, `"episode_number":4`, `"media_type":"episode"`} {
+	for _, want := range []string{`"series_title":"Synthetic Series"`, `"season_number":2`, `"episode_number":4`, `"media_type":"episode"`, `"start_position_seconds":null`, `"played_seconds":null`, `"paused_seconds":null`} {
 		if !strings.Contains(first.Body.String(), want) {
 			t.Fatalf("episode row lacks %s: %s", want, first.Body)
 		}

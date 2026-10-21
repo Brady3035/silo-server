@@ -75,7 +75,9 @@ func (s *playbackHistorySeed) insert(t *testing.T, name string, user int, profil
 
 // TestAdminWatchSummaryDB proves the totals over synthetic attempts: the
 // window start is inclusive, the profile filter narrows, other accounts never
-// count, and an empty window has no last play.
+// count, and an empty window has no last play. Watch time is the measured
+// time where a row has one; an older row's end position is capped at its
+// one-minute wall-clock length.
 func TestAdminWatchSummaryDB(t *testing.T) {
 	s := seedPlaybackHistoryAccount(t)
 	ctx := t.Context()
@@ -84,6 +86,11 @@ func TestAdminWatchSummaryDB(t *testing.T) {
 	s.insert(t, "p1-completed", s.account, "p-1", "", now.Add(-time.Hour), 100, true)
 	s.insert(t, "p2-partial", s.account, "p-2", "", now.Add(-2*time.Hour), 50.5, false)
 	s.insert(t, "edge", s.account, "p-1", "", since, 10, false)
+	// Resumed an hour and a half in and watched for two minutes.
+	resumed := s.insert(t, "p1-resumed", s.account, "p-1", "", now.Add(-3*time.Hour), 5520, false)
+	if _, err := s.pool.Exec(ctx, `UPDATE admin_playback_history SET start_position_seconds=5400, played_seconds=120, paused_seconds=30, measured=true WHERE session_id=$1`, resumed); err != nil {
+		t.Fatal(err)
+	}
 	s.insert(t, "before-window", s.account, "p-1", "", since.Add(-time.Millisecond), 1000, true)
 	other := s.user(t, "b")
 	s.insert(t, "other-account", other, "p-1", "", now.Add(-time.Hour), 1000, true)
@@ -93,11 +100,11 @@ func TestAdminWatchSummaryDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Since.Equal(since) || got.Plays != 3 || got.CompletedPlays != 1 || got.WatchedSeconds != 160.5 || got.LastPlayedAt == nil || !got.LastPlayedAt.Equal(now.Add(-time.Hour)) {
+	if !got.Since.Equal(since) || got.Plays != 4 || got.CompletedPlays != 1 || got.WatchedSeconds != 240.5 || got.LastPlayedAt == nil || !got.LastPlayedAt.Equal(now.Add(-time.Hour)) {
 		t.Fatalf("account totals: %+v", got)
 	}
 	got, err = h.ReadAdminWatchSummary(ctx, AdminWatchSummaryQuery{UserID: s.account, Days: 7, ProfileID: "p-1", Now: now})
-	if err != nil || got.Plays != 2 || got.CompletedPlays != 1 || got.WatchedSeconds != 110 {
+	if err != nil || got.Plays != 3 || got.CompletedPlays != 1 || got.WatchedSeconds != 190 {
 		t.Fatalf("profile totals: %+v %v", got, err)
 	}
 	got, err = h.ReadAdminWatchSummary(ctx, AdminWatchSummaryQuery{UserID: s.account, Days: 1, Now: now.AddDate(1, 0, 0)})

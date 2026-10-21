@@ -306,7 +306,8 @@ func TestNativeSessionKeepsHistoryRowPerStop(t *testing.T) {
 
 // TestPGPlaybackAdminStoreKeepsFurthestFinalizationDB proves a session
 // finalized more than once keeps the furthest position, whichever
-// finalization lands first.
+// finalization lands first, and keeps the largest measured watch time even
+// when the furthest copy has no measurement.
 func TestPGPlaybackAdminStoreKeepsFurthestFinalizationDB(t *testing.T) {
 	dsn := os.Getenv("SILO_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -332,28 +333,31 @@ func TestPGPlaybackAdminStoreKeepsFurthestFinalizationDB(t *testing.T) {
 	store := NewPGPlaybackAdminStore(pool, nil)
 	started := time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)
 	duration := 3600.0
-	finalize := func(watched float64, completed bool, ended time.Time) {
+	finalize := func(watched float64, completed bool, ended time.Time, watch playback.WatchTime) {
 		t.Helper()
 		if err := store.RecordHistory(ctx, AdminPlaybackHistoryEntry{
 			SessionID: sessionID, UserID: account, ProfileID: "profile-1", ProfileName: "Main",
 			MediaItemID: "movie-" + suffix, PlayMethod: "direct_play",
 			StartedAt: started.Format(time.RFC3339Nano), EndedAt: ended.Format(time.RFC3339Nano),
-			WatchedSeconds: watched, DurationSeconds: &duration, Completed: completed,
+			WatchedSeconds: watched, DurationSeconds: &duration, Completed: completed, Watch: watch,
 		}); err != nil {
 			t.Fatalf("RecordHistory(%v): %v", watched, err)
 		}
 	}
-	finalize(60, false, started.Add(2*time.Hour))
-	finalize(3500, true, started.Add(time.Hour))
-	finalize(1800, false, started.Add(3*time.Hour))
+	finalize(60, false, started.Add(2*time.Hour), playback.WatchTime{Measured: true, StartPosition: 0, PlayedSeconds: 55, PausedSeconds: 10})
+	finalize(3500, true, started.Add(time.Hour), playback.WatchTime{})
+	finalize(1800, false, started.Add(3*time.Hour), playback.WatchTime{Measured: true, StartPosition: 1700, PlayedSeconds: 40, PausedSeconds: 90})
 
-	var watched float64
-	var completed bool
+	var watched, start, played, paused float64
+	var completed, measured bool
 	var ended time.Time
-	if err := pool.QueryRow(ctx, `SELECT watched_seconds, completed, ended_at FROM admin_playback_history WHERE session_id=$1`, sessionID).Scan(&watched, &completed, &ended); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT watched_seconds, completed, ended_at, start_position_seconds, played_seconds, paused_seconds, measured FROM admin_playback_history WHERE session_id=$1`, sessionID).Scan(&watched, &completed, &ended, &start, &played, &paused, &measured); err != nil {
 		t.Fatal(err)
 	}
 	if watched != 3500 || !completed || !ended.Equal(started.Add(2*time.Hour)) {
 		t.Fatalf("row = watched %v, completed %v, ended %v; want 3500, completed, ended %v", watched, completed, ended, started.Add(2*time.Hour))
+	}
+	if !measured || start != 0 || played != 55 || paused != 90 {
+		t.Fatalf("watch time = measured %v, start %v, played %v, paused %v; want measured, 0, 55, 90", measured, start, played, paused)
 	}
 }
