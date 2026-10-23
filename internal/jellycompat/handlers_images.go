@@ -1,7 +1,9 @@
 package jellycompat
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -954,36 +956,43 @@ type imageInfoDTO struct {
 }
 
 // HandleItemImageInfos lists an item's artwork. Roku clients read it to pick
-// the poster on the details screen. The entries come from the same DTO
-// /Items/{id} serves, so the types and tags match the item's ImageTags.
+// the poster on a details screen, for movies, series, episodes, collections
+// and people alike. The entries come from the DTO /Items/{id} serves for the
+// same id, so the types and tags always match the item's ImageTags.
 func (h *ItemsHandler) HandleItemImageInfos(w http.ResponseWriter, r *http.Request) {
-	session := SessionFromContext(r.Context())
-	if session == nil {
-		writeError(w, http.StatusUnauthorized, "Unauthorized", "Missing authentication token")
+	item := &capturedResponse{header: http.Header{}, status: http.StatusOK}
+	h.HandleItem(item, r)
+	if item.status != http.StatusOK {
+		maps.Copy(w.Header(), item.header)
+		w.WriteHeader(item.status)
+		_, _ = w.Write(item.body.Bytes())
 		return
 	}
-	rawID := chiURLParam(r, "id")
-	if fileID, err := h.codec.DecodeIntID(EncodedIDMediaSource, rawID); err == nil {
-		contentID, err := h.codec.ResolveMediaSourceOwner(r.Context(), fileID)
-		if err != nil {
-			writeItemIDError(w, r, err)
-			return
-		}
-		rawID = h.codec.EncodeStringID(EncodedIDItem, contentID)
+	var dto struct {
+		ImageTags         map[string]string            `json:"ImageTags"`
+		BackdropImageTags []string                     `json:"BackdropImageTags"`
+		ImageBlurHashes   map[string]map[string]string `json:"ImageBlurHashes"`
 	}
-	contentID, err := decodeContentID(h.codec, rawID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "NotFound", "Item not found")
+	if err := json.Unmarshal(item.body.Bytes(), &dto); err != nil {
+		writeError(w, http.StatusInternalServerError, "InternalError", "Failed to read item images")
 		return
 	}
-	detail, err := h.content.GetItemDetail(r.Context(), session, contentID, nil)
-	if err != nil {
-		writeCompatUpstreamError(w, err)
-		return
-	}
-	h.rememberDetailImages(*detail)
-	writeJSON(w, http.StatusOK, imageInfosFromDTO(h.mapper.itemFromDetail(*detail, false, nil)))
+	writeJSON(w, http.StatusOK, imageInfosFromDTO(baseItemDTO{
+		ImageTags: dto.ImageTags, BackdropImageTags: dto.BackdropImageTags, ImageBlurHashes: dto.ImageBlurHashes,
+	}))
 }
+
+// capturedResponse buffers a handler's response so another handler can
+// reuse it.
+type capturedResponse struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (c *capturedResponse) Header() http.Header         { return c.header }
+func (c *capturedResponse) Write(b []byte) (int, error) { return c.body.Write(b) }
+func (c *capturedResponse) WriteHeader(status int)      { c.status = status }
 
 func imageInfosFromDTO(dto baseItemDTO) []imageInfoDTO {
 	infos := make([]imageInfoDTO, 0, len(dto.ImageTags)+len(dto.BackdropImageTags))

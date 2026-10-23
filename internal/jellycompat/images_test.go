@@ -831,9 +831,10 @@ func TestSearchHintImageTagResolvesThroughTagCache(t *testing.T) {
 func TestHandleItemImageInfosListsAdvertisedArtwork(t *testing.T) {
 	codec := NewResourceIDCodec()
 	h := &ItemsHandler{
-		codec:  codec,
-		mapper: newMapper(codec, &config.Config{Auth: config.AuthConfig{JWTSecret: "image-secret"}}),
-		images: NewImageCache(time.Hour, time.Now),
+		codec:    codec,
+		mapper:   newMapper(codec, &config.Config{Auth: config.AuthConfig{JWTSecret: "image-secret"}}),
+		images:   NewImageCache(time.Hour, time.Now),
+		userData: &mockUserDataService{},
 		content: &stubContentService{detail: &upstreamItemDetail{
 			ContentID: "movie-1", Type: "movie", Title: "Movie",
 			PosterURL: "https://cdn.example.test/poster.jpg", PosterPath: "metadb://poster/movie-1",
@@ -868,5 +869,17 @@ func TestHandleItemImageInfosListsAdvertisedArtwork(t *testing.T) {
 	}
 	if !maps.Equal(got, want) {
 		t.Fatalf("image infos = %v, want %v", got, want)
+	}
+
+	// An id /Items/{id} cannot resolve answers the same way here.
+	req = httptest.NewRequest(http.MethodGet, "/Items/not-an-id/Images", nil)
+	routeCtx = chi.NewRouteContext()
+	routeCtx.URLParams.Add("id", "not-an-id")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	req = req.WithContext(context.WithValue(req.Context(), compatSessionKey, &Session{Token: "token"}))
+	rec = httptest.NewRecorder()
+	h.HandleItemImageInfos(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown id status = %d, want 404", rec.Code)
 	}
 }

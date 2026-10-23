@@ -2681,6 +2681,18 @@ func (h *PlaybackHandler) buildPlaybackSource(
 			canEncodeOutput = true
 		}
 	}
+	if encodeAudioCodec == compatAudioCodecAC3 && maxBitrate > 0 {
+		// AC-3 takes more of the ceiling than the AAC reserve above, so fit
+		// the video to what remains and match the profile again.
+		targetBitrateKbps = int(maxBitrate*95/100/1000) - compatAC3BitrateKbps
+		targetResolution = compatTargetResolutionForBitrate(int64(max(targetBitrateKbps, 0)), compatPrimaryVideoTrack(version))
+		if targetVideoCodec == compatVideoCodecHEVC {
+			encodeAudioCodec = profile.hevcTranscodingOutputAudioCodec(version, targetAudioChannels, max(targetBitrateKbps, 0), targetResolution)
+		} else {
+			encodeAudioCodec = profile.transcodingOutputAudioCodec(version, targetAudioChannels, max(targetBitrateKbps, 0), targetResolution)
+		}
+		canEncodeOutput = encodeAudioCodec != ""
+	}
 	supportsTranscoding := enableTranscoding &&
 		(hlsAudioCopy || transcodeAudio || canEncodeOutput)
 	// Don't offer full video encodes of 4K sources when allow_4k_transcode is
@@ -2693,15 +2705,14 @@ func (h *PlaybackHandler) buildPlaybackSource(
 	if maxBitrate > 0 && targetBitrateKbps < 64 {
 		supportsTranscoding = false
 	}
-	// A video-copy remux encodes audio only when it transcodes audio; a full
-	// encode always does. Only AC-3 is recorded, so AAC sessions stay
-	// readable by binaries that predate the field.
+	// An audio-transcoding remux encodes the codec its own profile matched.
+	// Every other source keeps the full encode's codec: an audio-copy remux
+	// becomes that encode when a subtitle must be burned in. Only AC-3 is
+	// recorded, so AAC sessions stay readable by binaries that predate the
+	// field.
 	targetAudioCodec := encodeAudioCodec
-	if hlsRemux {
-		targetAudioCodec = ""
-		if transcodeAudio {
-			targetAudioCodec = remuxAudioCodec
-		}
+	if hlsRemux && transcodeAudio {
+		targetAudioCodec = remuxAudioCodec
 	}
 	if targetAudioCodec == compatTargetAudioCodec {
 		targetAudioCodec = ""
@@ -3897,7 +3908,10 @@ func applyCompatSubtitleDelivery(source *PlaybackMediaSource, profile DeviceProf
 		if !text || !external || alwaysBurn {
 			source.SupportsDirectStream = false
 			source.SupportsTranscoding = source.CanBurnSubtitle && !track.External
+			// A burn-in is a full encode. TranscodeAudio also marks a video-copy
+			// remux (compatHLSCopiesVideo), so it is cleared with HLSRemux.
 			source.HLSRemux = false
+			source.TranscodeAudio = false
 			source.HLSRemuxAudioStreamIndexes = nil
 			source.HLSRemuxMPEGTS = false
 			source.DVStripToHDR10 = false

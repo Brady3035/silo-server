@@ -58,6 +58,8 @@ func TestRokuProfileNegotiatesAC3WhenAACIsNotListed(t *testing.T) {
 		wantDirect    bool
 		wantTranscode bool
 		wantRemux     bool
+		wantCopyAudio bool
+		noDirect      bool
 		wantCodec     string
 		wantSegment   string
 	}{
@@ -66,6 +68,9 @@ func TestRokuProfileNegotiatesAC3WhenAACIsNotListed(t *testing.T) {
 		{name: "DTS remuxes with AC-3", profile: rokuProfile(t), allowAC3: true, audio: models.AudioTrack{Codec: "dts", Channels: 6, Default: true}, wantTranscode: true, wantCodec: compatAudioCodecAC3, wantSegment: compatAudioCodecV1PathSegment, wantRemux: true},
 		{name: "TrueHD 7.1 remuxes with AC-3", profile: rokuProfile(t), allowAC3: true, audio: models.AudioTrack{Codec: "truehd", Channels: 8, Default: true}, wantTranscode: true, wantCodec: compatAudioCodecAC3, wantSegment: compatAudioCodecV1PathSegment, wantRemux: true},
 		{name: "surround AC-3 on stereo output re-encodes", profile: rokuProfile(t), allowAC3: true, audio: models.AudioTrack{Codec: "ac3", Channels: 6, Default: true}, wantTranscode: true, wantCodec: compatAudioCodecAC3, wantSegment: compatAudioCodecV1PathSegment, wantRemux: true},
+		// A burned-in subtitle turns the audio-copy remux into the full
+		// encode, which then needs its AC-3 audio.
+		{name: "AC-3 stereo copies into HLS", profile: rokuProfile(t), allowAC3: true, noDirect: true, audio: models.AudioTrack{Codec: "ac3", Channels: 2, Default: true}, wantTranscode: true, wantCodec: compatAudioCodecAC3, wantSegment: compatRemuxV1PathSegment, wantRemux: true, wantCopyAudio: true},
 		{name: "no AC-3 executor offers nothing", profile: rokuProfile(t), audio: models.AudioTrack{Codec: "dts", Channels: 6, Default: true}},
 		// The AAC encode states its LC profile, so Roku's AudioProfile != Main
 		// rule passes and a profile that lists AAC keeps getting AAC.
@@ -74,6 +79,10 @@ func TestRokuProfileNegotiatesAC3WhenAACIsNotListed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			profile := tc.profile
 			profile.allowAC3Output = tc.allowAC3
+			req := req
+			if tc.noDirect {
+				req.EnableDirectPlay = boolPtr(false)
+			}
 			source := h.buildPlaybackSource("item", "play", rokuTestVersion(tc.audio), profile, req, true)
 			if source.SupportsDirectPlay != tc.wantDirect || source.SupportsTranscoding != tc.wantTranscode {
 				t.Fatalf("direct=%v transcoding=%v, want direct=%v transcoding=%v", source.SupportsDirectPlay, source.SupportsTranscoding, tc.wantDirect, tc.wantTranscode)
@@ -82,11 +91,17 @@ func TestRokuProfileNegotiatesAC3WhenAACIsNotListed(t *testing.T) {
 				t.Fatalf("TargetAudioCodec = %q, want %q", source.TargetAudioCodec, tc.wantCodec)
 			}
 			if tc.wantTranscode {
-				if source.HLSRemux != tc.wantRemux || source.TranscodeAudio != tc.wantRemux {
-					t.Fatalf("HLSRemux=%v TranscodeAudio=%v, want video-copy audio encode %v", source.HLSRemux, source.TranscodeAudio, tc.wantRemux)
+				if source.HLSRemux != tc.wantRemux || source.TranscodeAudio != (tc.wantRemux && !tc.wantCopyAudio) {
+					t.Fatalf("HLSRemux=%v TranscodeAudio=%v, want remux=%v copied audio=%v", source.HLSRemux, source.TranscodeAudio, tc.wantRemux, tc.wantCopyAudio)
 				}
 				if got := compatHLSRoutePathSegment(source); got != tc.wantSegment {
 					t.Fatalf("route segment = %q, want %q", got, tc.wantSegment)
+				}
+				if tc.wantCopyAudio {
+					source.HLSRemux = false // as applyCompatSubtitleDelivery does for a burn-in
+					if got := compatHLSRoutePathSegment(source); got != compatAudioCodecV1PathSegment {
+						t.Fatalf("burn-in encode route = %q, want %q", got, compatAudioCodecV1PathSegment)
+					}
 				}
 			}
 		})
@@ -174,5 +189,41 @@ func TestAC3HLSRoutesEnforceNegotiatedRecipe(t *testing.T) {
 				t.Fatalf("mismatched route changed the session: %+v", stored)
 			}
 		})
+	}
+}
+
+// An AC-3 encode reserves its own 448 kb/s, not AAC's, out of the ceiling.
+func TestRokuAC3EncodeFitsTheBitrateCeiling(t *testing.T) {
+	h := &PlaybackHandler{codec: NewResourceIDCodec()}
+	profile := rokuProfile(t)
+	profile.allowAC3Output = true
+	version := rokuTestVersion(models.AudioTrack{Codec: "dts", Channels: 6, Default: true})
+	source := h.buildPlaybackSource("item", "play", version, profile, playbackInfoRequest{MaxStreamingBitrate: 2_000_000}, true)
+	if !source.SupportsTranscoding || compatHLSCopiesVideo(source) || source.TargetAudioCodec != compatAudioCodecAC3 {
+		t.Fatalf("transcoding=%v copies video=%v audio=%q, want an AC-3 video encode", source.SupportsTranscoding, compatHLSCopiesVideo(source), source.TargetAudioCodec)
+	}
+	if got, want := source.TargetBitrateKbps, 2_000*95/100-compatAC3BitrateKbps; got != want {
+		t.Fatalf("video bitrate = %d kb/s, want %d", got, want)
+	}
+}
+
+// Roku sends AlwaysBurnInSubtitleWhenTranscoding=true, so a selected bitmap
+// subtitle turns an audio-encoding remux into a full encode. It must stop
+// copying video, or the subtitle is never drawn, and keep its AC-3 audio.
+func TestRokuBurnInEncodesVideoWithAC3(t *testing.T) {
+	h := &PlaybackHandler{codec: NewResourceIDCodec()}
+	profile := rokuProfile(t)
+	profile.allowAC3Output = true
+	version := rokuTestVersion(models.AudioTrack{Codec: "dts", Channels: 6, Default: true})
+	version.SubtitleTracks = []catalog.VersionSubtitleTrack{{Index: 2, Codec: "hdmv_pgs_subtitle", Language: "eng", Default: true}}
+	source := h.buildPlaybackSource("item", "play", version, profile, playbackInfoRequest{MaxStreamingBitrate: 140_000_000}, true)
+	selected := 2
+	source.SelectedSubtitleStreamIndex = &selected
+	applyCompatSubtitleDelivery(&source, profile, true)
+	if !source.SubtitleBurnIn || !source.SupportsTranscoding || compatHLSCopiesVideo(source) {
+		t.Fatalf("burn-in=%v transcoding=%v copies video=%v, want a video encode", source.SubtitleBurnIn, source.SupportsTranscoding, compatHLSCopiesVideo(source))
+	}
+	if got := compatHLSRoutePathSegment(source); got != compatAudioCodecV1PathSegment {
+		t.Fatalf("route segment = %q, want %q", got, compatAudioCodecV1PathSegment)
 	}
 }
