@@ -248,6 +248,8 @@ the primary first, and is empty when the item has no primary backdrop.
 | `GET /Items/{id}/Images/Art` | The clear art; 404 without one. |
 | `GET /Items/{id}/Images/Disc` | The disc art; 404 without one. |
 | `GET /Items/{id}/Images/Backdrop/{index}` | Index 0 (or no index) is the primary backdrop; index `i` is the item's `i`-th backdrop after it, 404 past the last. Other image types ignore the index. |
+| `GET /Items/{id}/Images` | Jellyfin's image list: one entry per type in `ImageTags` and one `Backdrop` entry per backdrop tag, with its `ImageIndex`. `Width` and `Height` are omitted because Silo does not record artwork dimensions. |
+| `HEAD /Items/{id}/Images/{type}[/{index}]` | `200` with no body when the GET would serve the image, without redirecting or proxying it; Roku checks for a logo this way. |
 
 An episode's `ParentThumbImageTag` still names its series' backdrop; the series'
 `Thumb` route serves its landscape thumb when it has one.
@@ -733,3 +735,18 @@ the complete HEVC recipe. Required audio conversion and tone mapping must be
 available on that same executor. Negotiation reads workers' stored capability
 reports; execution checks the selected worker again. Existing HEVC direct-play
 and remux routes are unchanged.
+
+## AC-3 audio encoding
+
+Compatibility audio encodes are AAC, which FFmpeg's encoder writes as AAC-LC;
+the negotiated output states that profile, so codec-profile rules on
+`AudioProfile` (Roku requires `!= Main`) evaluate against it. Roku clients
+(jellyfin-roku and Moonfin for Roku) list AC-3 but not AAC in their video
+transcoding profiles, so for a profile like that an audio encode falls back to
+AC-3 at the same channel target, capped at 5.1, at 448 kb/s. AAC stays the
+choice whenever a profile lists it. AC-3 needs an executor allowed by routing
+policy that advertises `audio_to_ac3` recipe 1; without one, PlaybackInfo
+answers as it would with no compatible encode. The codec is frozen in the
+playback source as `TargetAudioCodec`, and its playlists and segments use
+`/Videos/{id}/audio-codec-v1/...`, which takes precedence over the other HLS
+route versions, so older API instances reject them instead of encoding AAC.

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"mime"
 	"net/http"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -813,6 +815,18 @@ func (h *ImagesHandler) serveImageURL(w http.ResponseWriter, r *http.Request, im
 		h.serveBundledAsset(w, imageURL)
 		return
 	}
+	// A HEAD asks only whether the image exists, and resolving it answered
+	// that. Redirecting would send the HEAD to a URL presigned for GET, which
+	// object stores reject, and proxying would fetch the whole image.
+	if r.Method == http.MethodHead {
+		if _, err := parseRemoteImageURL(imageURL); err != nil {
+			writeError(w, http.StatusBadGateway, "UpstreamError", "Failed to load image")
+			return
+		}
+		setCompatImageRouteNoStore(w.Header())
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if shouldProxyCompatImageRequest(r) {
 		h.proxyImageURL(w, r, imageURL)
 		return
@@ -926,4 +940,68 @@ func (h *ImagesHandler) HandleUserImage(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(avatarPalette[avatarPaletteIndex(id)])
+}
+
+// imageInfoDTO is one entry of Jellyfin's GET /Items/{id}/Images response.
+// Silo does not record artwork dimensions or byte sizes, so Width and Height
+// are left out, as Jellyfin does for an unknown size.
+type imageInfoDTO struct {
+	ImageType  string `json:"ImageType"`
+	ImageIndex *int   `json:"ImageIndex,omitempty"`
+	ImageTag   string `json:"ImageTag"`
+	BlurHash   string `json:"BlurHash,omitempty"`
+	Size       int64  `json:"Size"`
+}
+
+// HandleItemImageInfos lists an item's artwork. Roku clients read it to pick
+// the poster on the details screen. The entries come from the same DTO
+// /Items/{id} serves, so the types and tags match the item's ImageTags.
+func (h *ItemsHandler) HandleItemImageInfos(w http.ResponseWriter, r *http.Request) {
+	session := SessionFromContext(r.Context())
+	if session == nil {
+		writeError(w, http.StatusUnauthorized, "Unauthorized", "Missing authentication token")
+		return
+	}
+	rawID := chiURLParam(r, "id")
+	if fileID, err := h.codec.DecodeIntID(EncodedIDMediaSource, rawID); err == nil {
+		contentID, err := h.codec.ResolveMediaSourceOwner(r.Context(), fileID)
+		if err != nil {
+			writeItemIDError(w, r, err)
+			return
+		}
+		rawID = h.codec.EncodeStringID(EncodedIDItem, contentID)
+	}
+	contentID, err := decodeContentID(h.codec, rawID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "NotFound", "Item not found")
+		return
+	}
+	detail, err := h.content.GetItemDetail(r.Context(), session, contentID, nil)
+	if err != nil {
+		writeCompatUpstreamError(w, err)
+		return
+	}
+	h.rememberDetailImages(*detail)
+	writeJSON(w, http.StatusOK, imageInfosFromDTO(h.mapper.itemFromDetail(*detail, false, nil)))
+}
+
+func imageInfosFromDTO(dto baseItemDTO) []imageInfoDTO {
+	infos := make([]imageInfoDTO, 0, len(dto.ImageTags)+len(dto.BackdropImageTags))
+	for _, imageType := range slices.Sorted(maps.Keys(dto.ImageTags)) {
+		tag := dto.ImageTags[imageType]
+		infos = append(infos, imageInfoDTO{
+			ImageType: imageType,
+			ImageTag:  tag,
+			BlurHash:  dto.ImageBlurHashes[imageType][tag],
+		})
+	}
+	for i, tag := range dto.BackdropImageTags {
+		infos = append(infos, imageInfoDTO{
+			ImageType:  compatBackdropImageType,
+			ImageIndex: &i,
+			ImageTag:   tag,
+			BlurHash:   dto.ImageBlurHashes[compatBackdropImageType][tag],
+		})
+	}
+	return infos
 }

@@ -1731,6 +1731,9 @@ func appendAACEncodeFilterArgs(args []string, sourceChannels int, targetCodec st
 // when we must transcode video but want to preserve surround channels for an
 // HDMI receiver — both are legal in HLS fMP4 (not MPEG-TS; ensure the HLS
 // packager is fMP4 when emitting these).
+// maxAC3Channels is the most channels FFmpeg's ac3 encoder accepts (5.1).
+const maxAC3Channels = 6
+
 func appendAudioArgs(args []string, opts TranscodeOpts) []string {
 	// Case-insensitive so the switch agrees with TranscodesAudio for any
 	// client-supplied spelling.
@@ -1749,8 +1752,13 @@ func appendAudioArgs(args []string, opts TranscodeOpts) []string {
 		// count so we preserve surround when possible.
 		args = append(args, "-c:a", "eac3", "-b:a", "384k")
 	case "ac3":
-		// Legacy Dolby Digital; universal AVR support.
+		// Legacy Dolby Digital; universal AVR support. The encoder takes at
+		// most 5.1, and a caller that names a channel count gets exactly that
+		// many (audio_to_ac3 recipe 1); otherwise the source layout is kept.
 		args = append(args, "-c:a", "ac3", "-b:a", "448k")
+		if opts.TargetAudioChannels > 0 {
+			args = append(args, "-ac", strconv.Itoa(min(opts.TargetAudioChannels, maxAC3Channels)))
+		}
 	default:
 		channels, bitrateKbps := ResolveAACOutputV3(opts.TargetAudioChannels, opts.TargetAudioBitrateKbps)
 		args = append(args, "-c:a", "aac", "-b:a", strconv.Itoa(bitrateKbps)+"k", "-ac", strconv.Itoa(channels))

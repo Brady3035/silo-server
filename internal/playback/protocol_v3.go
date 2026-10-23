@@ -301,6 +301,7 @@ const (
 // executor must run; the registry keys availability by the same names.
 const (
 	TransformationAudioToAACV3      = "audio_to_aac"
+	TransformationAudioToAC3V3      = "audio_to_ac3"
 	TransformationVideoToH264V3     = "video_to_h264"
 	TransformationVideoToHEVCV3     = "video_to_hevc"
 	TransformationServerDV7HDR10V3  = "server_dv7_to_hdr10"
@@ -314,6 +315,10 @@ const (
 	// enhancement-layer NAL units (see DV7ToHDR10BitstreamFilter), so an
 	// executor still on version 1 cannot claim the corrected output.
 	TransformationServerDV7HDR10RecipeVersionV3 = "2"
+	// TransformationAudioToAC3RecipeVersionV3 1 encodes AC-3 at the requested
+	// channel count (see appendAudioArgs). Jellyfin-compat offers it to clients
+	// whose transcoding profiles list AC-3 and not AAC, such as Roku.
+	TransformationAudioToAC3RecipeVersionV3 = "1"
 )
 
 // Transformation executors: who runs the transformation. A "server"
