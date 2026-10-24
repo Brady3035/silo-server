@@ -150,12 +150,13 @@ func (p *HTTPProxy) ServeRoute(w http.ResponseWriter, r *http.Request, installat
 		} else {
 			headers["X-Silo-User-Role"] = "user"
 		}
-		// Full-page plugin navigation cannot attach X-Profile-Id. The launch
-		// cookie carries the validated active profile in that case; direct
-		// bearer/API-key calls may still provide the header.
+		// The access resolver verified this profile: the launch cookie's, or
+		// a declared X-Profile-Id that passed the viewer gate's PIN check.
+		// An unverified header never reaches here, so the plugin can key
+		// per-profile data on the id.
 		profileID := strings.TrimSpace(contextProfileID)
-		if profileID == "" {
-			profileID = strings.TrimSpace(r.Header.Get("X-Profile-Id"))
+		if profileID != "" {
+			headers["X-Silo-Profile-Id"] = profileID
 		}
 		if p.themes != nil {
 			if theme, err := p.themes.LookupUITheme(r.Context(), userID, profileID); err == nil && theme != "" {
@@ -190,6 +191,12 @@ func (p *HTTPProxy) ServeRoute(w http.ResponseWriter, r *http.Request, installat
 
 	for key, value := range filteredResponseHeaders(response.GetHeaders()) {
 		w.Header().Set(key, value)
+	}
+	// The host may have set a renewed launch cookie on this response. A
+	// plugin's own Cache-Control must not let a shared cache (a CDN in front
+	// of Silo) store one viewer's credential and replay it to another.
+	if len(w.Header().Values("Set-Cookie")) > 0 {
+		w.Header().Set("Cache-Control", "private, no-store")
 	}
 	// A plugin answers with its own Content-Type; the browser must not
 	// reinterpret the body as something else (script, HTML) on Silo's origin.

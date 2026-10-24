@@ -3136,12 +3136,18 @@ func newChiRouter(deps Dependencies) chi.Router {
 	if deps.PluginHTTPProxy != nil {
 		v2deps.AuthProviderIconPublic = deps.PluginHTTPProxy.PublicGETRoute
 	}
+	pluginRouteAccess := newPluginAccessResolver(jwtService, sessionRepo, apiKeyRepo, userRepo, viewerResolver, actingAdmin)
+	// Assets keep their JWT-only access: API keys never reached them.
+	pluginAssetAccess := newPluginAccessResolver(jwtService, sessionRepo, nil, nil, viewerResolver, actingAdmin)
 	v2deps.PluginContent = plugins.NewContentHandler(deps.PluginHTTPProxy, func(r *http.Request) plugins.ContentAccess {
-		authenticated, admin, userID, profileID := resolveOptionalPluginAccessUser(r, jwtService, sessionRepo, apiKeyRepo, userRepo)
-		return plugins.ContentAccess{Authenticated: authenticated, Admin: admin, UserID: userID, ProfileID: profileID}
+		resolved := pluginRouteAccess.resolve(r)
+		return plugins.ContentAccess{
+			Authenticated: resolved.authenticated, Admin: resolved.admin, UserID: resolved.userID, ProfileID: resolved.profileID,
+			RenewedCookie: renewedPluginCookie(r, resolved, plugins.ContentPrefix),
+		}
 	}, func(r *http.Request) plugins.ContentAccess {
-		authenticated, admin := resolveOptionalPluginAccess(r, jwtService, sessionRepo)
-		return plugins.ContentAccess{Authenticated: authenticated, Admin: admin}
+		resolved := pluginAssetAccess.resolve(r)
+		return plugins.ContentAccess{Authenticated: resolved.authenticated, Admin: resolved.admin}
 	})
 	if deps.BrandingService != nil {
 		v2deps.AdminBrandingAssets = handlers.NewBrandingHandler(deps.BrandingService)
@@ -3196,9 +3202,12 @@ func newChiRouter(deps Dependencies) chi.Router {
 					http.Error(w, "invalid installation id", http.StatusBadRequest)
 					return
 				}
-				authenticated, admin, userID, profileID := resolveOptionalPluginAccessUser(r, jwtService, sessionRepo, apiKeyRepo, userRepo)
-				ctx := plugins.WithPluginAccessUser(r.Context(), authenticated, admin, userID, profileID)
-				deps.PluginHTTPProxy.ServeRoute(w, r.WithContext(ctx), installationID, authenticated, admin)
+				resolved := pluginRouteAccess.resolve(r)
+				if cookie := renewedPluginCookie(r, resolved, "/api/v1"); cookie != nil {
+					http.SetCookie(w, cookie)
+				}
+				ctx := plugins.WithPluginAccessUser(r.Context(), resolved.authenticated, resolved.admin, resolved.userID, resolved.profileID)
+				deps.PluginHTTPProxy.ServeRoute(w, r.WithContext(ctx), installationID, resolved.authenticated, resolved.admin)
 			})
 			r.Get("/plugin-assets/{installation_id}/*", func(w http.ResponseWriter, r *http.Request) {
 				installationID, err := strconv.Atoi(chi.URLParam(r, "installation_id"))
@@ -3211,8 +3220,8 @@ func newChiRouter(deps Dependencies) chi.Router {
 					http.NotFound(w, r)
 					return
 				}
-				authenticated, admin := resolveOptionalPluginAccess(r, jwtService, sessionRepo)
-				deps.PluginHTTPProxy.ServeAsset(w, r.WithContext(plugins.WithPluginAccess(r.Context(), authenticated, admin)), installationID, assetPath)
+				resolved := pluginAssetAccess.resolve(r)
+				deps.PluginHTTPProxy.ServeAsset(w, r.WithContext(plugins.WithPluginAccess(r.Context(), resolved.authenticated, resolved.admin)), installationID, assetPath)
 			})
 		}
 
@@ -4961,88 +4970,6 @@ func (r *pgSubtitleMediaResolver) GetMediaFileWithMetadata(ctx context.Context, 
 		return nil, err
 	}
 	return &meta, nil
-}
-
-func resolveOptionalPluginAccess(
-	r *http.Request,
-	jwtService *auth.JWTService,
-	sessionRepo *auth.SessionRepository,
-) (bool, bool) {
-	authenticated, admin, _, _ := resolveOptionalPluginAccessUser(r, jwtService, sessionRepo, nil, nil)
-	return authenticated, admin
-}
-
-// resolveOptionalPluginAccessUser is like resolveOptionalPluginAccess but also
-// returns the authenticated user's ID, and accepts API-key bearer tokens
-// (sa_*) when apiKeyRepo + userRepo are provided.
-func resolveOptionalPluginAccessUser(
-	r *http.Request,
-	jwtService *auth.JWTService,
-	sessionRepo *auth.SessionRepository,
-	apiKeyRepo *auth.APIKeyRepository,
-	userRepo *auth.UserRepository,
-) (bool, bool, int, string) {
-	if jwtService == nil || sessionRepo == nil {
-		return false, false, 0, ""
-	}
-
-	token := ""
-	if header := r.Header.Get("Authorization"); header != "" {
-		parts := strings.SplitN(header, " ", 2)
-		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
-			token = strings.TrimSpace(parts[1])
-		}
-	}
-	if token == "" {
-		token = strings.TrimSpace(r.URL.Query().Get("token"))
-	}
-	if token == "" {
-		if cookie, err := r.Cookie(auth.PluginAccessCookieName); err == nil {
-			token = strings.TrimSpace(cookie.Value)
-		}
-	}
-	if token == "" {
-		return false, false, 0, ""
-	}
-
-	if strings.HasPrefix(token, "sa_") {
-		if apiKeyRepo == nil || userRepo == nil {
-			return false, false, 0, ""
-		}
-		apiKey, err := apiKeyRepo.GetByKey(r.Context(), token)
-		if err != nil {
-			return false, false, 0, ""
-		}
-		// Scoped keys are allowlist credentials for the routes their scopes
-		// name; plugin access is not on any scope's allowlist.
-		if len(apiKey.Scopes) > 0 {
-			return false, false, 0, ""
-		}
-		user, err := userRepo.GetByID(r.Context(), apiKey.UserID)
-		if err != nil || !user.Enabled {
-			return false, false, 0, ""
-		}
-		return true, user.Role == "admin", user.ID, ""
-	}
-
-	claims, err := jwtService.ValidateToken(token)
-	if err != nil || (claims.TokenType != auth.TokenTypeAccess && claims.TokenType != auth.TokenTypePluginAccess) {
-		return false, false, 0, ""
-	}
-	// A session holding a temporary password may only change it.
-	if claims.PasswordChangeRequired {
-		return false, false, 0, ""
-	}
-	// Plugin launch tokens copy the role of the access token they were minted
-	// from, and a role change keeps the session, so admin access follows the
-	// account's current role rather than the token's.
-	// A remote-playback handoff only plays on its device; plugins are not
-	// part of that.
-	authority, active, err := sessionRepo.ActiveSession(r.Context(), claims.SessionID)
-	if err != nil || !active || authority.IsRemotePlayback() {
-		return false, false, 0, ""
-	}
-	return true, authority.Role == "admin", claims.UserID, claims.ProfileID
 }
 
 // NewTMDBCollectionFetcher creates a TMDBCollectionFetcher from an API key.

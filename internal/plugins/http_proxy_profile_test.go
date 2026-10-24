@@ -10,14 +10,15 @@ import (
 )
 
 type profileTestRouteClient struct {
-	request *pluginv1.HandleHTTPRequest
+	request         *pluginv1.HandleHTTPRequest
+	responseHeaders map[string]string
 }
 
 func (c *profileTestRouteClient) Handle(
 	_ context.Context, request *pluginv1.HandleHTTPRequest,
 ) (*pluginv1.HandleHTTPResponse, error) {
 	c.request = request
-	return &pluginv1.HandleHTTPResponse{StatusCode: http.StatusOK}, nil
+	return &pluginv1.HandleHTTPResponse{StatusCode: http.StatusOK, Headers: c.responseHeaders}, nil
 }
 
 type profileTestProxyService struct {
@@ -84,7 +85,59 @@ func TestHTTPProxyUsesLaunchProfileWithoutRequestHeader(t *testing.T) {
 		t.Fatalf("lookup profiles = theme %q identity %q", themes.profileID, identities.profileID)
 	}
 	if client.request == nil || client.request.Headers["X-Silo-Theme"] != "dark" ||
-		client.request.Headers["X-Silo-Profile-Name"] != "Living Room" {
+		client.request.Headers["X-Silo-Profile-Name"] != "Living Room" ||
+		client.request.Headers["X-Silo-Profile-Id"] != "profile-1" {
 		t.Fatalf("forwarded request = %#v", client.request)
+	}
+}
+
+// Only the profile the access resolver verified reaches the plugin. A raw
+// X-Profile-Id names a profile without its PIN proof, so it must not pick
+// the profile the plugin sees.
+func TestHTTPProxyIgnoresUnverifiedProfileHeader(t *testing.T) {
+	client := &profileTestRouteClient{}
+	themes := &profileCapturingThemeLookup{}
+	identities := &profileCapturingIdentityLookup{}
+	proxy := NewHTTPProxy(
+		profileTestProxyService{client: client}, profileTestInstallationStore{},
+	).WithUserThemeLookup(themes).WithUserIdentityLookup(identities)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins/1/page", nil)
+	req.Header.Set("X-Profile-Id", "locked-profile")
+	req = req.WithContext(WithPluginAccessUser(req.Context(), true, false, 7, ""))
+	rec := httptest.NewRecorder()
+	proxy.ServeRoute(rec, req, 1, true, false)
+
+	if rec.Code != http.StatusOK || client.request == nil {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if themes.profileID != "" || identities.profileID != "" {
+		t.Fatalf("lookup profiles = theme %q identity %q, want none", themes.profileID, identities.profileID)
+	}
+	if id, ok := client.request.Headers["X-Silo-Profile-Id"]; ok {
+		t.Fatalf("forwarded X-Silo-Profile-Id = %q, want none", id)
+	}
+}
+
+// A response that renews the launch cookie must not be stored by a shared
+// cache, whatever Cache-Control the plugin asked for; one without keeps it.
+func TestHTTPProxyKeepsRenewedCookiesOutOfSharedCaches(t *testing.T) {
+	for _, renewed := range []bool{true, false} {
+		client := &profileTestRouteClient{responseHeaders: map[string]string{"Cache-Control": "public, max-age=600"}}
+		proxy := NewHTTPProxy(profileTestProxyService{client: client}, profileTestInstallationStore{})
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins/1/page", nil)
+		req = req.WithContext(WithPluginAccessUser(req.Context(), true, false, 7, "profile-1"))
+		rec := httptest.NewRecorder()
+		if renewed {
+			http.SetCookie(rec, &http.Cookie{Name: "silo_plugin_access", Value: "renewed"})
+		}
+		proxy.ServeRoute(rec, req, 1, true, false)
+		want := "public, max-age=600"
+		if renewed {
+			want = "private, no-store"
+		}
+		if got := rec.Header().Get("Cache-Control"); got != want {
+			t.Fatalf("renewed=%v: Cache-Control = %q, want %q", renewed, got, want)
+		}
 	}
 }

@@ -26,6 +26,25 @@ reuses the separate existing session/launch-cookie resolver; asset mounts accept
 GET and do not gain API-key access. Static responses retain ServeFile conditions
 and ranges. Unsupported mount methods return 405 with Allow.
 
+Both mounts, and the v1 ones, resolve the caller in `internal/api/plugin_access.go`
+by the rules the viewer and admin gates apply elsewhere:
+
+- The profile is the one the token carries (the launch cookie checks it when it
+  is issued) or, when the token carries none, a declared `X-Profile-Id` that
+  passes the viewer gate's check: it must belong to the account, and a
+  PIN-locked profile needs its `X-Profile-Token` (API keys skip the PIN, as on
+  viewer routes). A declared profile that fails the check makes the request
+  anonymous instead of serving it as the account.
+- Admin access is the acting-admin decision of the admin route groups: the
+  account's current admin role, exercised through its primary profile (or no
+  profile while the household does not require one). The account role alone
+  does not open `admin` routes.
+- The proxy forwards the verified profile to the plugin as
+  `X-Silo-Profile-Id`, alongside `X-Silo-User-Id`, `X-Silo-User-Role`
+  (`admin` only when the acting-admin decision allows it) and the display
+  headers. A raw `X-Profile-Id` is never forwarded and never picks the
+  profile.
+
 The existing proxy's credential header filters, response header filters, request
 buffering, error behavior and HTTPRoutes RPC remain unchanged. Query forwarding
 retains only the first value of each repeated key, as in the bridge proxy. This is not a
@@ -48,9 +67,16 @@ cookie.
 
 The launch cookie lasts five minutes, is HttpOnly and SameSite=Lax, and uses
 Secure on HTTPS. Its path is exactly `/api/v2/plugin-content`, covering plugin
-pages and assets. A cookie from the frozen v1 launch path expires on its original
-five-minute lifetime. Each content request still validates the login session,
-so revoking that session invalidates the cookie before its expiry.
+pages and assets. A page request through a launch cookie older than half its
+lifetime is answered with a fresh one on the same path, for the same session
+and profile, so an open plugin page that keeps calling its routes stays signed
+in. Renewal first checks that the cookie's profile still exists and belongs to
+the account; the PIN was proven at launch and is not asked again. The v1 launch
+cookie renews the same way on `/api/v1`. A response that carries a renewed
+cookie is sent with `Cache-Control: private, no-store`, overriding the plugin's
+own, so a shared cache never stores one viewer's credential. Each content
+request still validates the login session, so revoking that session invalidates
+the cookie before its expiry and ends renewal.
 
 Plugin-generated absolute links, redirects and response bodies are not rewritten.
 A preserved v1 absolute href remains a v1 href. Plugin authors must use compatible

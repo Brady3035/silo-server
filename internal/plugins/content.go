@@ -17,6 +17,10 @@ type ContentAccess struct {
 	Admin         bool
 	UserID        int
 	ProfileID     string
+	// RenewedCookie, when set, replaces the plugin launch cookie on the
+	// response, so an open plugin page outlives the cookie's five minutes
+	// while its login session lasts.
+	RenewedCookie *http.Cookie
 }
 
 type ContentAccessResolver func(*http.Request) ContentAccess
@@ -70,6 +74,9 @@ func (h *ContentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if kind == contentPages {
 		if h.routeAccess != nil {
 			access = h.routeAccess(r)
+		}
+		if access.RenewedCookie != nil {
+			http.SetCookie(w, access.RenewedCookie)
 		}
 		ctx := WithPluginAccessUser(r.Context(), access.Authenticated, access.Admin, access.UserID, access.ProfileID)
 		h.proxy.ServeRoute(w, r.WithContext(ctx), installationID, access.Authenticated, access.Admin)

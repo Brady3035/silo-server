@@ -1698,28 +1698,14 @@ func main() {
 			BaseDir: pluginCacheDir,
 		})
 
-		libDataSource := pluginhost.LibraryDataSourceFunc(
-			func(ctx context.Context, _ string) ([]pluginhost.LibraryRecord, error) {
-				// TODO: scope by userID when the requests plugin needs it (Plan B).
-				// For now, all callers see admin-scope.
-				if deps.FolderRepo == nil {
-					return nil, nil
-				}
-				folders, err := deps.FolderRepo.List(ctx)
-				if err != nil {
-					return nil, err
-				}
-				out := make([]pluginhost.LibraryRecord, 0, len(folders))
-				for _, f := range folders {
-					out = append(out, pluginhost.LibraryRecord{
-						ID:        strconv.Itoa(f.ID),
-						Name:      f.Name,
-						MediaType: mapFolderTypeToMediaType(f.Type),
-					})
-				}
-				return out, nil
-			},
-		)
+		libSource := pluginLibrarySource{groups: accessGroupStore}
+		if deps.FolderRepo != nil {
+			libSource.folders = deps.FolderRepo
+		}
+		if deps.DB != nil {
+			libSource.users = auth.NewUserRepository(deps.DB)
+		}
+		var libDataSource pluginhost.LibraryDataSource = libSource
 		presenceItemRepo := catalog.NewItemRepository(deps.DB)
 		catalogPresence := pluginhost.NewCatalogPresence(
 			func(ctx context.Context, mediaType string, tmdbIDs []string) ([]pluginhost.LibraryPresenceRecord, error) {
