@@ -105,7 +105,7 @@ func TestTranscodeServePlainCardRecoveryFailureStays404(t *testing.T) {
 // Content-Length. A full-length playlist runs to tens of kilobytes, past
 // net/http's write buffer, so without the header it goes out chunked; a player
 // that opens HLS with a ranged byte reader (AetherEngine on Apple platforms)
-// then takes it for a non-seekable stream and fails to recognise it as a
+// then takes it for a non-seekable stream and fails to recognize it as a
 // playlist.
 func TestTranscodeManifestStatesItsLength(t *testing.T) {
 	sessionMgr := playback.NewSessionManager(0, 0)
