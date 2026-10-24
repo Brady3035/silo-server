@@ -3203,9 +3203,7 @@ func newChiRouter(deps Dependencies) chi.Router {
 					return
 				}
 				resolved := pluginRouteAccess.resolve(r)
-				if cookie := renewedPluginCookie(r, resolved, "/api/v1"); cookie != nil {
-					http.SetCookie(w, cookie)
-				}
+				setRenewedCookie(w, renewedPluginCookie(r, resolved, "/api/v1"))
 				ctx := plugins.WithPluginAccessUser(r.Context(), resolved.authenticated, resolved.admin, resolved.userID, resolved.profileID)
 				deps.PluginHTTPProxy.ServeRoute(w, r.WithContext(ctx), installationID, resolved.authenticated, resolved.admin)
 			})

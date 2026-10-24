@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,13 +25,16 @@ func (s pluginTestSessions) ActiveSession(_ context.Context, id string) (auth.Se
 }
 
 // pluginTestViewer accepts "kid" and accepts "locked" only with its PIN
-// token, as the viewer gate does.
+// token, as the viewer gate does. Every profile is at PIN revision 1 except
+// "repinned", whose PIN changed since its cookies were launched.
 type pluginTestViewer struct{}
 
 func (pluginTestViewer) Resolve(_ context.Context, in access.ResolveInput) (access.Scope, error) {
 	switch {
 	case in.ProfileID == "kid", in.ProfileID == "primary":
-		return access.Scope{ProfileID: in.ProfileID, ProfileVerified: true}, nil
+		return access.Scope{ProfileID: in.ProfileID, ProfileVerified: true, ProfilePINRevision: 1}, nil
+	case in.ProfileID == "repinned":
+		return access.Scope{ProfileID: in.ProfileID, ProfileVerified: true, ProfilePINRevision: 2}, nil
 	case in.ProfileID == "locked" && (in.ProfileToken == "pin-proof" || in.SkipPINVerification):
 		return access.Scope{ProfileID: in.ProfileID, ProfileVerified: true}, nil
 	case in.ProfileID == "locked":
@@ -45,24 +49,70 @@ func pluginTestActingAdmin(_ context.Context, in apimw.ActingAdminRequest) (bool
 	return in.ProfileID == "primary", nil
 }
 
-func TestPluginAccessResolver(t *testing.T) {
+// pluginAccessCase is one request through the resolver, against an account
+// whose current role is accountRole.
+type pluginAccessCase struct {
+	name        string
+	accountRole string
+	cookie      string
+	bearer      string
+	headers     map[string]string
+	want        pluginAccess
+	wantRenewal bool
+}
+
+// pluginTestMinter returns the JWT service the cases sign with and a minter
+// for plugin access tokens launched at PIN revision 1, as the launch
+// endpoints record it for a verified profile.
+func pluginTestMinter(t *testing.T) (*auth.JWTService, func(role, profileID string, ttl time.Duration) string) {
+	t.Helper()
 	jwt := auth.NewJWTService("plugin-access-test-secret-0123456789", time.Hour, time.Hour)
-	mint := func(role string, profileID string, ttl time.Duration) string {
-		token, err := jwt.GeneratePluginAccessToken(7, role, "session-1", profileID, ttl)
+	return jwt, func(role, profileID string, ttl time.Duration) string {
+		var revision *int64
+		if profileID != "" {
+			revision = new(int64(1))
+		}
+		token, err := jwt.GeneratePluginAccessToken(7, role, "session-1", profileID, revision, ttl)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return token
 	}
-	for _, tc := range []struct {
-		name        string
-		accountRole string
-		cookie      string
-		bearer      string
-		headers     map[string]string
-		want        pluginAccess
-		wantRenewal bool
-	}{
+}
+
+func runPluginAccessCases(t *testing.T, jwt *auth.JWTService, cases []pluginAccessCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resolver := &pluginAccessResolver{
+				jwt: jwt, sessions: pluginTestSessions{role: tc.accountRole},
+				viewer: pluginTestViewer{}, actingAdmin: pluginTestActingAdmin,
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins/1/settings", nil)
+			if tc.cookie != "" {
+				req.AddCookie(&http.Cookie{Name: auth.PluginAccessCookieName, Value: tc.cookie})
+			}
+			if tc.bearer != "" {
+				req.Header.Set("Authorization", "Bearer "+tc.bearer)
+			}
+			for key, value := range tc.headers {
+				req.Header.Set(key, value)
+			}
+			got := resolver.resolve(req)
+			if (got.renewedToken != "") != tc.wantRenewal {
+				t.Fatalf("renewed = %v, want %v", got.renewedToken != "", tc.wantRenewal)
+			}
+			got.renewedToken = ""
+			if got != tc.want {
+				t.Fatalf("access = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPluginAccessResolver(t *testing.T) {
+	jwt, mint := pluginTestMinter(t)
+	runPluginAccessCases(t, jwt, []pluginAccessCase{
 		{
 			name: "launch cookie keeps its verified profile", accountRole: models.RoleUser,
 			cookie: mint(models.RoleUser, "kid", handlers.PluginLaunchTTL),
@@ -101,6 +151,12 @@ func TestPluginAccessResolver(t *testing.T) {
 			cookie: mint(models.RoleAdmin, "primary", handlers.PluginLaunchTTL),
 			want:   pluginAccess{authenticated: true, userID: 7, profileID: "primary"},
 		},
+	})
+}
+
+func TestPluginAccessRenewal(t *testing.T) {
+	jwt, mint := pluginTestMinter(t)
+	runPluginAccessCases(t, jwt, []pluginAccessCase{
 		{
 			name: "a launch cookie past half its life is renewed", accountRole: models.RoleUser,
 			cookie:      mint(models.RoleUser, "kid", handlers.PluginLaunchTTL/2-time.Second),
@@ -113,43 +169,34 @@ func TestPluginAccessResolver(t *testing.T) {
 			want:   pluginAccess{authenticated: true, userID: 7, profileID: "deleted"},
 		},
 		{
+			name: "a launch cookie whose profile PIN changed is not renewed", accountRole: models.RoleUser,
+			cookie: mint(models.RoleUser, "repinned", handlers.PluginLaunchTTL/2-time.Second),
+			want:   pluginAccess{authenticated: true, userID: 7, profileID: "repinned"},
+		},
+		{
+			name: "a launch cookie without a PIN revision is not renewed", accountRole: models.RoleUser,
+			cookie: func() string {
+				token, err := jwt.GeneratePluginAccessToken(7, models.RoleUser, "session-1", "kid", nil, handlers.PluginLaunchTTL/2-time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return token
+			}(),
+			want: pluginAccess{authenticated: true, userID: 7, profileID: "kid"},
+		},
+		{
 			name: "a bearer token is never renewed", accountRole: models.RoleUser,
 			bearer: mint(models.RoleUser, "kid", handlers.PluginLaunchTTL/2-time.Second),
 			want:   pluginAccess{authenticated: true, userID: 7, profileID: "kid"},
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			resolver := &pluginAccessResolver{
-				jwt: jwt, sessions: pluginTestSessions{role: tc.accountRole},
-				viewer: pluginTestViewer{}, actingAdmin: pluginTestActingAdmin,
-			}
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins/1/settings", nil)
-			if tc.cookie != "" {
-				req.AddCookie(&http.Cookie{Name: auth.PluginAccessCookieName, Value: tc.cookie})
-			}
-			if tc.bearer != "" {
-				req.Header.Set("Authorization", "Bearer "+tc.bearer)
-			}
-			for key, value := range tc.headers {
-				req.Header.Set(key, value)
-			}
-			got := resolver.resolve(req)
-			if (got.renewedToken != "") != tc.wantRenewal {
-				t.Fatalf("renewed = %v, want %v", got.renewedToken != "", tc.wantRenewal)
-			}
-			got.renewedToken = ""
-			if got != tc.want {
-				t.Fatalf("access = %+v, want %+v", got, tc.want)
-			}
-		})
-	}
+	})
 }
 
 // A renewed launch token keeps the session and profile and gets a full
 // lifetime, so the page stays signed in as the same viewer.
 func TestPluginAccessRenewalKeepsTheViewer(t *testing.T) {
 	jwt := auth.NewJWTService("plugin-access-test-secret-0123456789", time.Hour, time.Hour)
-	old, err := jwt.GeneratePluginAccessToken(7, models.RoleUser, "session-1", "kid", time.Minute)
+	old, err := jwt.GeneratePluginAccessToken(7, models.RoleUser, "session-1", "kid", new(int64(1)), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +212,7 @@ func TestPluginAccessRenewalKeepsTheViewer(t *testing.T) {
 		t.Fatal(err)
 	}
 	if claims.SessionID != "session-1" || claims.ProfileID != "kid" || claims.TokenType != auth.TokenTypePluginAccess ||
+		claims.ProfilePINRevision == nil || *claims.ProfilePINRevision != 1 ||
 		time.Until(claims.ExpiresAt.Time) < handlers.PluginLaunchTTL-time.Minute {
 		t.Fatalf("renewed claims = %+v", claims)
 	}
@@ -231,5 +279,44 @@ func TestPluginAccessResolverAPIKeys(t *testing.T) {
 				t.Fatalf("access = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// The acting-admin decision gets the device id the sign-in normalizer keeps:
+// a malformed or over-long X-Silo-Device-Id is dropped, not passed through.
+func TestPluginAccessNormalizesTheDeviceID(t *testing.T) {
+	var seen string
+	resolver := &pluginAccessResolver{actingAdmin: func(_ context.Context, in apimw.ActingAdminRequest) (bool, error) {
+		seen = in.DeviceID
+		return true, nil
+	}}
+	admin := &auth.Claims{UserID: 8, Role: models.RoleAdmin}
+	for header, want := range map[string]string{
+		"living-room.tv:1":                        "living-room.tv:1",
+		"not a device id!":                        "",
+		strings.Repeat("d", 129):                  "",
+		"  550e8400-e29b-41d4-a716-446655440000 ": "550e8400-e29b-41d4-a716-446655440000",
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins/1/settings", nil)
+		req.Header.Set("X-Silo-Device-Id", header)
+		resolver.actingAsAdmin(req, admin, "")
+		if seen != want {
+			t.Fatalf("device id %q reached the decision as %q, want %q", header, seen, want)
+		}
+	}
+}
+
+// The v1 route attaches a renewed cookie with the no-store policy before the
+// proxy can answer, as the v2 content handler does.
+func TestSetRenewedCookieMarksTheResponseUncacheable(t *testing.T) {
+	rec := httptest.NewRecorder()
+	setRenewedCookie(rec, &http.Cookie{Name: auth.PluginAccessCookieName, Value: "renewed", Path: "/api/v1"})
+	if rec.Header().Get("Set-Cookie") == "" || rec.Header().Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("headers = %v", rec.Header())
+	}
+	rec = httptest.NewRecorder()
+	setRenewedCookie(rec, nil)
+	if len(rec.Header()) != 0 {
+		t.Fatalf("no renewal set headers %v", rec.Header())
 	}
 }

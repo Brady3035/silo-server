@@ -76,7 +76,11 @@ func (h *ContentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			access = h.routeAccess(r)
 		}
 		if access.RenewedCookie != nil {
+			// Mark the response uncacheable before ServeRoute can answer
+			// early (a static descriptor or an error): it carries a
+			// credential either way.
 			http.SetCookie(w, access.RenewedCookie)
+			w.Header().Set("Cache-Control", "private, no-store")
 		}
 		ctx := WithPluginAccessUser(r.Context(), access.Authenticated, access.Admin, access.UserID, access.ProfileID)
 		h.proxy.ServeRoute(w, r.WithContext(ctx), installationID, access.Authenticated, access.Admin)

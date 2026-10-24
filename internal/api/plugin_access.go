@@ -135,34 +135,36 @@ func (p *pluginAccessResolver) resolve(r *http.Request) pluginAccess {
 	}
 	if fromCookie && claims.TokenType == auth.TokenTypePluginAccess && claims.ExpiresAt != nil &&
 		time.Until(claims.ExpiresAt.Time) < handlers.PluginLaunchTTL-pluginRenewAfter &&
-		p.profileStillOwned(r, &current) {
-		if renewed, err := p.jwt.GeneratePluginAccessToken(claims.UserID, authority.Role, claims.SessionID, claims.ProfileID, handlers.PluginLaunchTTL); err == nil {
+		p.profileUnchanged(r, &current) {
+		if renewed, err := p.jwt.GeneratePluginAccessToken(claims.UserID, authority.Role, claims.SessionID, claims.ProfileID, claims.ProfilePINRevision, handlers.PluginLaunchTTL); err == nil {
 			result.renewedToken = renewed
 		}
 	}
 	return result
 }
 
-// profileStillOwned reports whether a launch cookie's profile can be carried
-// into a renewed cookie: it must still exist and belong to the account. The
-// PIN was proven when the cookie was launched, so it is not asked again;
-// without renewal the cookie would have expired within five minutes and its
-// relaunch would have checked the profile, so renewal checks it instead. A
-// profile-less cookie has nothing to check.
-func (p *pluginAccessResolver) profileStillOwned(r *http.Request, claims *auth.Claims) bool {
+// profileUnchanged reports whether a launch cookie's profile can be carried
+// into a renewed cookie: it must still exist, belong to the account and have
+// the PIN revision the cookie was launched at. The PIN was proven at launch;
+// a changed revision means the PIN was set, changed or cleared since, which
+// ends the profile's verification tokens (access.CheckProfileToken) and so
+// ends renewal too. A cookie from a release that did not record the revision
+// is not renewed and expires on its own. A profile-less cookie has nothing
+// to check.
+func (p *pluginAccessResolver) profileUnchanged(r *http.Request, claims *auth.Claims) bool {
 	if claims.ProfileID == "" {
 		return true
 	}
-	if p.viewer == nil {
+	if p.viewer == nil || claims.ProfilePINRevision == nil {
 		return false
 	}
-	_, err := p.viewer.Resolve(r.Context(), access.ResolveInput{
+	scope, err := p.viewer.Resolve(r.Context(), access.ResolveInput{
 		UserID:              claims.UserID,
 		SessionID:           claims.SessionID,
 		ProfileID:           claims.ProfileID,
 		SkipPINVerification: true,
 	})
-	return err == nil
+	return err == nil && scope.ProfilePINRevision == *claims.ProfilePINRevision
 }
 
 func (p *pluginAccessResolver) resolveAPIKey(r *http.Request, token string) pluginAccess {
@@ -233,7 +235,9 @@ func (p *pluginAccessResolver) actingAsAdmin(r *http.Request, claims *auth.Claim
 	allowed, err := p.actingAdmin(r.Context(), apimw.ActingAdminRequest{
 		Claims:    claims,
 		ProfileID: profileID,
-		DeviceID:  r.Header.Get("X-Silo-Device-Id"),
+		// The sign-in normalizer drops a malformed or over-long device id
+		// rather than passing it to the decision.
+		DeviceID: auth.ClientDeviceFromHeaders(r.Header).ID,
 	})
 	return err == nil && allowed
 }
@@ -260,7 +264,7 @@ func pluginRequestToken(r *http.Request) (string, bool) {
 
 // renewedPluginCookie is the launch cookie that replaces the request's on
 // path, with the attributes the launch endpoints use, or nil when the
-// request's cookie needs no renewal.
+// request's cookie needs no renewal. Callers set it with setRenewedCookie.
 func renewedPluginCookie(r *http.Request, access pluginAccess, path string) *http.Cookie {
 	if access.renewedToken == "" {
 		return nil
@@ -277,4 +281,17 @@ func renewedPluginCookie(r *http.Request, access pluginAccess, path string) *htt
 		SameSite: http.SameSiteLaxMode,
 		Secure:   handlers.IsSecureRequest(r),
 	}
+}
+
+// setRenewedCookie attaches a renewed launch cookie to w and marks the
+// response uncacheable before any handler writes it, so every response that
+// carries the credential, including static assets and early errors, keeps it
+// out of shared caches. The proxy re-applies the policy after copying a
+// plugin's own headers.
+func setRenewedCookie(w http.ResponseWriter, cookie *http.Cookie) {
+	if cookie == nil {
+		return
+	}
+	http.SetCookie(w, cookie)
+	w.Header().Set("Cache-Control", "private, no-store")
 }

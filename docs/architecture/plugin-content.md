@@ -70,11 +70,16 @@ Secure on HTTPS. Its path is exactly `/api/v2/plugin-content`, covering plugin
 pages and assets. A page request through a launch cookie older than half its
 lifetime is answered with a fresh one on the same path, for the same session
 and profile, so an open plugin page that keeps calling its routes stays signed
-in. Renewal first checks that the cookie's profile still exists and belongs to
-the account; the PIN was proven at launch and is not asked again. The v1 launch
-cookie renews the same way on `/api/v1`. A response that carries a renewed
-cookie is sent with `Cache-Control: private, no-store`, overriding the plugin's
-own, so a shared cache never stores one viewer's credential. Each content
+in. The launch cookie records the PIN revision of the profile it was launched
+for (`profile_pin_revision`), and renewal requires the profile to still exist,
+belong to the account and have that revision: setting, changing or clearing the
+PIN ends renewal, as it ends the profile's verification tokens. The PIN itself
+is not asked again. A cookie without the revision, from an older release, is not
+renewed and expires on its own. The v1 launch cookie renews the same way on
+`/api/v1`. A response that carries a renewed cookie is sent with
+`Cache-Control: private, no-store`, set when the cookie is attached and again
+over the plugin's own headers, so a shared cache never stores one viewer's
+credential, static pages and early errors included. Each content
 request still validates the login session, so revoking that session invalidates
 the cookie before its expiry and ends renewal.
 

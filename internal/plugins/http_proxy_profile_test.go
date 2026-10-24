@@ -2,8 +2,11 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	pluginv1 "github.com/Silo-Server/silo-plugin-sdk/pkg/pluginproto/silo/plugin/v1"
@@ -139,5 +142,44 @@ func TestHTTPProxyKeepsRenewedCookiesOutOfSharedCaches(t *testing.T) {
 		if got := rec.Header().Get("Cache-Control"); got != want {
 			t.Fatalf("renewed=%v: Cache-Control = %q, want %q", renewed, got, want)
 		}
+	}
+}
+
+type staticPageProxyService struct{ file string }
+
+func (staticPageProxyService) RouteDescriptors(context.Context, int) ([]*pluginv1.HttpRouteDescriptor, error) {
+	return []*pluginv1.HttpRouteDescriptor{{Method: http.MethodGet, Path: "/page", Access: "authenticated", StaticAsset: true}}, nil
+}
+
+func (s staticPageProxyService) ResolveAssetPath(context.Context, int, string) (string, error) {
+	return s.file, nil
+}
+
+func (staticPageProxyService) HTTPRoutesClient(context.Context, int, string) (httpRouteClient, error) {
+	return nil, errors.New("a static page makes no plugin call")
+}
+
+// A static plugin page is answered before any plugin call, so the response
+// that carries a renewed launch cookie is marked uncacheable when the cookie
+// is attached, not only after the plugin's headers are copied.
+func TestContentHandlerKeepsRenewedCookiesOnStaticPagesOutOfSharedCaches(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "index.html")
+	if err := os.WriteFile(file, []byte("<p>page</p>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proxy := NewHTTPProxy(staticPageProxyService{file: file}, profileTestInstallationStore{})
+	handler := NewContentHandler(proxy, func(*http.Request) ContentAccess {
+		return ContentAccess{
+			Authenticated: true, UserID: 7, ProfileID: "profile-1",
+			RenewedCookie: &http.Cookie{Name: "silo_plugin_access", Value: "renewed", Path: ContentPrefix},
+		}
+	}, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, ContentPrefix+"/plugins/1/page", nil))
+	if rec.Code != http.StatusOK || rec.Header().Get("Set-Cookie") == "" {
+		t.Fatalf("status = %d, Set-Cookie = %q", rec.Code, rec.Header().Get("Set-Cookie"))
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("Cache-Control = %q, want private, no-store", got)
 	}
 }
