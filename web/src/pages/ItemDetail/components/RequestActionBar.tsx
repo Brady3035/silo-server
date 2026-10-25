@@ -84,6 +84,7 @@ export default function RequestActionBar({ item, libraryHref }: RequestActionBar
   // Which of the viewer's requests the cancel dialog is for.
   const [confirmCancel, setConfirmCancel] = useState<MediaRequest | null>(null);
   const [pickSeasons, setPickSeasons] = useState(false);
+  const [pick4KSeasons, setPick4KSeasons] = useState(false);
   // A series TMDB lists seasons for is requested season by season.
   const seasonPicker = item.media_type === "series" && (item.seasons?.length ?? 0) > 0;
 
@@ -164,7 +165,9 @@ export default function RequestActionBar({ item, libraryHref }: RequestActionBar
       label: "Request in 4K",
       icon: Plus,
       pending: createRequest.isPending,
-      onClick: () => createRequest.mutate({ ...requestInputFromMediaResult(item), is_4k: true }),
+      onClick: seasonPicker
+        ? () => setPick4KSeasons(true)
+        : () => createRequest.mutate({ ...requestInputFromMediaResult(item), is_4k: true }),
     });
   }
   if (ownRequest) {
@@ -255,6 +258,16 @@ export default function RequestActionBar({ item, libraryHref }: RequestActionBar
           tmdbID={item.tmdb_id}
           title={item.title}
           detail={item}
+        />
+      ) : null}
+      {seasonPicker ? (
+        <RequestSeasonsDialog
+          open={pick4KSeasons}
+          onOpenChange={setPick4KSeasons}
+          tmdbID={item.tmdb_id}
+          title={item.title}
+          detail={item}
+          is4K
         />
       ) : null}
     </>

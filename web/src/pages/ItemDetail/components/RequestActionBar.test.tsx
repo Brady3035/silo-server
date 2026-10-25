@@ -219,4 +219,25 @@ describe("RequestActionBar cancel", () => {
     renderBar(othersPending);
     expect(screen.getByRole("button", { name: "Cancel request" })).toBeTruthy();
   });
+
+  it("asks which seasons of a series to request in 4K", () => {
+    mocks.myRequests.mockReturnValue([]);
+    renderBar({
+      ...heat,
+      media_type: "series",
+      title: "Example",
+      request_4k: { requestable: true },
+      seasons: [
+        {
+          season_number: 1,
+          episode_count: 8,
+          air_date: "2020-01-01",
+          availability: "available",
+          requested: false,
+        },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Request in 4K" }));
+    expect(screen.getByRole("heading", { name: "Request seasons in 4K" })).toBeTruthy();
+  });
 });
