@@ -53,7 +53,9 @@ export function useDetail4KRequest(
   const seasonPicker = mediaType === "series" && (detail?.seasons?.length ?? 0) > 0;
 
   let onRequest4K: (() => void) | undefined;
-  if (detail && uhd?.requestable) {
+  // The menu closes on click; while the request is sending, a second click
+  // would only be refused as already requested.
+  if (detail && uhd?.requestable && !createRequest.isPending) {
     onRequest4K = seasonPicker
       ? () => setPickSeasons(true)
       : () => createRequest.mutate({ ...requestInputFromMediaResult(detail), is_4k: true });

@@ -6,13 +6,14 @@ const mocks = vi.hoisted(() => ({
   status: vi.fn(),
   detail: vi.fn(),
   create: vi.fn(),
+  creating: false,
   own: vi.fn(),
 }));
 
 vi.mock("@/hooks/queries/useRequests", () => ({
   useRequestFeatureStatus: () => ({ data: mocks.status() }),
   useRequestMediaDetail: (...args: unknown[]) => ({ data: mocks.detail(...args) }),
-  useCreateMediaRequest: () => ({ mutate: mocks.create, isPending: false }),
+  useCreateMediaRequest: () => ({ mutate: mocks.create, isPending: mocks.creating }),
   useCancelMediaRequest: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("@/hooks/useCurrentProfile", () => ({
@@ -34,6 +35,7 @@ const heat = {
 describe("useDetail4KRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.creating = false;
     mocks.detail.mockReturnValue(heat);
     mocks.own.mockReturnValue(undefined);
   });
@@ -51,6 +53,13 @@ describe("useDetail4KRequest", () => {
     const { result } = renderHook(() => useDetail4KRequest("movie", 949, "Heat"));
     result.current.onRequest4K?.();
     expect(mocks.create.mock.calls[0]![0]).toMatchObject({ tmdb_id: 949, is_4k: true });
+  });
+
+  it("offers no second 4K request while the first is sending", () => {
+    mocks.status.mockReturnValue({ requests_enabled: true, requests_4k_allowed: true });
+    mocks.creating = true;
+    const { result } = renderHook(() => useDetail4KRequest("movie", 949, "Heat"));
+    expect(result.current.onRequest4K).toBeUndefined();
   });
 
   it("offers to cancel the viewer's open 4K request instead of another", () => {
