@@ -114,6 +114,32 @@ func routingStore(facts RoutingFacts) *fakeStore {
 	return store
 }
 
+// A 4K request is accepted only when the title's own route sends 4K to an
+// enabled server, so a 4K rule for other titles does not count.
+func TestEnsureUHDRequestableReadsTheTitlesRoute(t *testing.T) {
+	store := routingStore(RoutingFacts{})
+	store.routes[0].UHD = RouteDestination{}                           // Everything else: no 4K
+	store.routes[1].UHD = RouteDestination{IntegrationID: "radarr-4k"} // Anime: 4K
+	svc, _ := newRoutedService(store)
+	ctx := context.Background()
+	allowed := EffectivePolicy{AllowUHD: true}
+
+	if err := svc.ensureUHDRequestable(ctx, allowed, MediaTypeMovie, capturedFacts(RoutingFacts{})); !errors.Is(err, ErrUHDUnavailable) {
+		t.Fatalf("a title no 4K rule takes: error = %v, want ErrUHDUnavailable", err)
+	}
+	anime := capturedFacts(RoutingFacts{Anime: true})
+	if err := svc.ensureUHDRequestable(ctx, allowed, MediaTypeMovie, anime); err != nil {
+		t.Fatalf("an anime title: %v, want it accepted", err)
+	}
+	if err := svc.ensureUHDRequestable(ctx, EffectivePolicy{}, MediaTypeMovie, anime); !errors.Is(err, ErrUHDNotAllowed) {
+		t.Fatalf("without permission: error = %v, want ErrUHDNotAllowed", err)
+	}
+	store.integrations[1].Enabled = false // radarr-4k
+	if err := svc.ensureUHDRequestable(ctx, allowed, MediaTypeMovie, anime); !errors.Is(err, ErrUHDUnavailable) {
+		t.Fatalf("the 4K server disabled: error = %v, want ErrUHDUnavailable", err)
+	}
+}
+
 func TestSubmitRoutedSendsEachTierToItsServer(t *testing.T) {
 	store := routingStore(capturedFacts(RoutingFacts{Anime: true}))
 	svc, router := newRoutedService(store)

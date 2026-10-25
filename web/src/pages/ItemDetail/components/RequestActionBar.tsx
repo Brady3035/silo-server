@@ -273,10 +273,13 @@ function useOwnCancellableRequest(item: RequestMediaDetail): MediaRequest | unde
       ? request
       : undefined;
   }
+  // The regular request's state drives this; the title's 4K request is a
+  // separate request.
   return mine.data?.find(
     (request) =>
       request.media_type === item.media_type &&
       request.tmdb_id === item.tmdb_id &&
+      !request.is_4k &&
       canCancelOwnRequest(request),
   );
 }

@@ -41,18 +41,22 @@ A mode of `inherit` defers to the next layer. The v2 API calls these
 `requests_4k` and `requests_4k_default`; a write that leaves them out keeps the
 stored value, and v1 writes never change them.
 
-Creating a 4K request is refused when the account may not make one
-(`ErrUHDNotAllowed`) or no server takes 4K for the media type
-(`ErrUHDUnavailable`): no route with a 4K destination, or, under Standard, no
-server marked 4K. Where a plugin routes by itself, a connection has to say it
-takes 4K (see [Routing](#routing)). The title detail's `request_4k` reports the
-same answers as reasons (`4k_not_allowed`, `4k_unavailable`) before anyone
-asks.
+Creating a 4K request is refused, after the checks every request gets, when
+the account may not make one (`ErrUHDNotAllowed`) or no server would take it
+(`ErrUHDUnavailable`). With the title's routing facts captured, the 4K tier is
+decided as submission will decide it, so a rule's conditions count and a
+disabled server does not; without them, some enabled route has to send 4K to
+an enabled server (under Standard, the server marked 4K). Where a plugin routes
+by itself, a connection has to say it takes 4K (see [Routing](#routing)). The
+title detail's `request_4k` reports the same answers for the media type as
+reasons (`4k_not_allowed`, `4k_unavailable`), after the reasons any request
+can have.
 
 The library cannot tell a 4K copy from an HD one, so it never refuses or
 completes a 4K request. A 4K request is made even when the title is in the
 library, asks for every aired season when it names none, and completes only
-when its 4K target does. Follows and watchlist requests stay on a title's
+when its 4K target does; its state comes from that target, not from the
+library's season counts. Follows and watchlist requests stay on a title's
 regular request.
 
 Every quality a request wants is required. A 4K tier that no route sends, or

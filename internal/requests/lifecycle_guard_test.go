@@ -338,6 +338,10 @@ func TestRequestState(t *testing.T) {
 		{"withdrawn", Request{Status: StatusPending, Outcome: OutcomeCancelled}, StateCancelled},
 		// A failed request keeps whatever status it failed at.
 		{"failed after queueing", Request{Status: StatusQueued, Outcome: OutcomeFailed}, StateFailed},
+		// The library's copy says nothing about a 4K request's progress.
+		{"4K, downloading, its seasons in the library in HD", Request{Is4K: true, Status: StatusDownloading, Outcome: OutcomeActive,
+			Seasons: []int{1}, SeasonProgress: []SeasonProgress{{Season: 1, SeasonCounts: SeasonCounts{Aired: 9, Have: 9}}}, LibraryContentID: "series-1"}, StateProcessing},
+		{"4K, its 4K copy done", Request{Is4K: true, Status: StatusCompleted, Outcome: OutcomeActive, Seasons: []int{1}}, StateAvailable},
 	} {
 		if got := tc.req.State(); got != tc.want {
 			t.Errorf("%s: State() = %q, want %q", tc.name, got, tc.want)

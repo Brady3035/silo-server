@@ -280,8 +280,8 @@ func (s *Service) ReorderRoutes(ctx context.Context, viewer Viewer, mediaType Me
 }
 
 // PreviewRoute shows how the routes would send a title for a requester now,
-// from TMDB's current facts. Both tiers are shown regardless of the
-// requester's 4K entitlement.
+// from TMDB's current facts. Both tiers are shown: HD for a regular request,
+// 4K for a 4K request or under force-dual.
 func (s *Service) PreviewRoute(ctx context.Context, viewer Viewer, mediaType MediaType, tmdbID, requesterUserID int) (*RoutePreview, error) {
 	if !viewer.IsAdmin {
 		return nil, ErrForbidden

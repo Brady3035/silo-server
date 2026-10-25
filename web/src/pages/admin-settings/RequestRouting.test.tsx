@@ -563,11 +563,7 @@ describe("Where requests go: the rule editor", () => {
     expect(within(dialog).getByRole("combobox", { name: "4K version Send to" })).toHaveTextContent(
       "Same as Everything else (no 4K version)",
     );
-    expect(
-      within(dialog).getByText(
-        "Sent along with the HD version when the requester's playback limit allows 4K.",
-      ),
-    ).toBeTruthy();
+    expect(within(dialog).getByText("Gets 4K requests.")).toBeTruthy();
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Remove the release year condition" }),
     );

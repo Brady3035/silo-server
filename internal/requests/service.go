@@ -47,17 +47,9 @@ const externalIDHydrationConcurrency = 4
 
 const certificationHydrationConcurrency = 8
 
+// EntitlementResolver resolves the viewer's effective parental rating
+// ceiling.
 type EntitlementResolver interface {
-	// MaxPlaybackQuality returns the requester's effective playback-quality
-	// ceiling (already combining account- and profile-level caps). Empty string
-	// means "no cap".
-	MaxPlaybackQuality(ctx context.Context, userID int, profileID string) (string, error)
-}
-
-// ContentRatingResolver resolves the viewer's effective parental rating
-// ceiling. Detected by type assertion on the service's EntitlementResolver so
-// existing EntitlementResolver fakes keep compiling.
-type ContentRatingResolver interface {
 	// MaxContentRating returns the profile's content-rating ceiling. Empty
 	// string means "no ceiling".
 	MaxContentRating(ctx context.Context, userID int, profileID string) (string, error)
@@ -162,11 +154,10 @@ func (s *Service) populateRequesterIdentity(ctx context.Context, req *Request) {
 // ceilinged profile, which is also all the certification.lte push-down can
 // express.
 func (s *Service) viewerContentCeiling(ctx context.Context, viewer Viewer) (string, error) {
-	resolver, ok := s.entitlements.(ContentRatingResolver)
-	if !ok {
+	if s.entitlements == nil {
 		return "", nil
 	}
-	return resolver.MaxContentRating(ctx, viewer.UserID, viewer.ProfileID)
+	return s.entitlements.MaxContentRating(ctx, viewer.UserID, viewer.ProfileID)
 }
 
 type certKey struct {
@@ -901,11 +892,6 @@ func (s *Service) CreateRequest(ctx context.Context, viewer Viewer, input Create
 	if err := s.ensureCreateAllowedByCeiling(ctx, viewer, normalized); err != nil {
 		return nil, err
 	}
-	if normalized.Is4K {
-		if err := s.ensureUHDRequestable(ctx, viewer, normalized.MediaType); err != nil {
-			return nil, err
-		}
-	}
 	tvdbLookupFailed := s.enrichExternalIDs(ctx, &normalized)
 
 	matches, err := s.lookupPresence(ctx, normalized.MediaType, []PresenceCandidate{createPresenceCandidate(normalized)})
@@ -980,6 +966,11 @@ func (s *Service) CreateRequest(ctx context.Context, viewer Viewer, input Create
 	}
 	if err := validateCreateAccess(policy); err != nil {
 		return nil, err
+	}
+	if normalized.Is4K {
+		if err := s.ensureUHDRequestable(ctx, policy, normalized.MediaType, facts); err != nil {
+			return nil, err
+		}
 	}
 
 	id, err := idgen.NextID()
@@ -1179,7 +1170,9 @@ func (s *Service) attachLibraryContent(ctx context.Context, reqs ...*Request) er
 			}
 			for _, req := range requestsByKey[requestKey{mediaType: mediaType, tmdbID: tmdbID}] {
 				req.LibraryContentID = match.ContentID
-				if req.MediaType == MediaTypeSeries && len(req.Seasons) > 0 {
+				// The library's season counts are its HD copy's, not a 4K
+				// request's progress.
+				if req.MediaType == MediaTypeSeries && len(req.Seasons) > 0 && !req.Is4K {
 					seasonRequests[match.ContentID] = append(seasonRequests[match.ContentID], req)
 				}
 			}
@@ -1404,7 +1397,7 @@ func (s *Service) GetFeatureStatus(ctx context.Context, viewer Viewer) (FeatureS
 	// Rating enforcement is active when the wiring can resolve both a
 	// profile ceiling and per-title certifications; with either missing the
 	// server behaves like an older version, and clients should know that.
-	_, hasRatings := s.entitlements.(ContentRatingResolver)
+	hasRatings := s.entitlements != nil
 	_, hasCerts := s.tmdb.(TMDBCertificationClient)
 	status := FeatureStatus{
 		RequestsEnabled:            settings.RequestsEnabled,
@@ -1417,8 +1410,11 @@ func (s *Service) GetFeatureStatus(ctx context.Context, viewer Viewer) (FeatureS
 		// The account's own permission is left to the caller, which reads
 		// it for the request capability anyway.
 		status.WatchlistRequests = settings.WatchlistRequests && viewer.UserID != 0 && s.watchlistAutoRequest(ctx, viewer)
+		// A 4K hint is not worth failing the whole status over.
 		if status.UHDRequestsAllowed, err = s.viewerMayRequestUHD(ctx, viewer); err != nil {
-			return FeatureStatus{}, err
+			slog.WarnContext(ctx, "requests: could not tell whether the viewer may request 4K", "component", "requests",
+				"user_id", viewer.UserID, "error", err)
+			status.UHDRequestsAllowed = false
 		}
 	}
 	return status, nil
@@ -1431,41 +1427,46 @@ func (s *Service) viewerMayRequestUHD(ctx context.Context, viewer Viewer) (bool,
 		return false, nil
 	}
 	policy, err := s.EffectivePolicy(ctx, viewer.UserID)
-	if err != nil || !policy.AllowUHD {
+	if err != nil || !policy.AllowUHD || policy.Blocked || s.router == nil {
 		return false, err
 	}
-	for _, mediaType := range []MediaType{MediaTypeMovie, MediaTypeSeries} {
-		if ok, err := s.uhdDeliverable(ctx, mediaType); err != nil || ok {
-			return ok, err
-		}
+	fc, err := s.newFulfillContext(ctx)
+	if err != nil {
+		return false, err
 	}
-	return false, nil
+	return uhdDeliverableIn(fc, MediaTypeMovie) || uhdDeliverableIn(fc, MediaTypeSeries), nil
 }
 
-// ensureUHDRequestable refuses a 4K request the viewer may not make
+// ensureUHDRequestable refuses a 4K request the account may not make
 // (ErrUHDNotAllowed) or no download server would take (ErrUHDUnavailable).
-func (s *Service) ensureUHDRequestable(ctx context.Context, viewer Viewer, mediaType MediaType) error {
-	policy, err := s.EffectivePolicy(ctx, viewer.UserID)
-	if err != nil {
-		return err
-	}
+// With the title's routing facts captured, it decides the 4K tier the way
+// submission will, so a rule's conditions count; without them it asks only
+// whether some route sends 4K for the media type.
+func (s *Service) ensureUHDRequestable(ctx context.Context, policy EffectivePolicy, mediaType MediaType, facts RoutingFacts) error {
 	if !policy.AllowUHD {
 		return ErrUHDNotAllowed
 	}
-	deliverable, err := s.uhdDeliverable(ctx, mediaType)
+	if s.router == nil {
+		return ErrUHDUnavailable
+	}
+	fc, err := s.newFulfillContext(ctx)
 	if err != nil {
 		return err
 	}
-	if !deliverable {
+	if !uhdDeliverableIn(fc, mediaType) {
 		return ErrUHDUnavailable
+	}
+	if routes := fc.routesFor(mediaType); len(routes) > 0 && facts.Captured() {
+		req := Request{MediaType: mediaType, RoutingFacts: facts, IsAnime: facts.Anime}
+		if decision, ok := decideRoutes(routes, req, []Quality{Quality2160p})[Quality2160p]; !ok || decision.Skip {
+			return ErrUHDUnavailable
+		}
 	}
 	return nil
 }
 
 // uhdDeliverable reports whether a 4K request of the media type has
-// somewhere to go: a routing rule with a 4K destination (under Standard, the
-// server marked 4K), or, where a plugin routes by itself, a connection that
-// takes 4K.
+// somewhere to go; see uhdDeliverableIn.
 func (s *Service) uhdDeliverable(ctx context.Context, mediaType MediaType) (bool, error) {
 	if s.router == nil {
 		return false, nil
@@ -1474,13 +1475,25 @@ func (s *Service) uhdDeliverable(ctx context.Context, mediaType MediaType) (bool
 	if err != nil {
 		return false, err
 	}
+	return uhdDeliverableIn(fc, mediaType), nil
+}
+
+// uhdDeliverableIn reports whether some title of the media type can get a
+// 4K copy: an enabled route sends 4K to an enabled server (under Standard,
+// the server marked 4K), or, where a plugin routes by itself, a connection
+// takes 4K. A rule's conditions are not read here; ensureUHDRequestable
+// reads them for a title.
+func uhdDeliverableIn(fc *fulfillContext, mediaType MediaType) bool {
 	if routes := fc.routesFor(mediaType); len(routes) > 0 {
 		for _, route := range routes {
-			if route.Enabled && !route.SkipUHD && route.UHD.IntegrationID != "" {
-				return true, nil
+			if !route.Enabled || route.SkipUHD || route.UHD.IntegrationID == "" {
+				continue
+			}
+			if in := integrationByID(fc, route.UHD.IntegrationID); in != nil && in.Enabled {
+				return true
 			}
 		}
-		return false, nil
+		return false
 	}
 	var conns []ResolvedRouterConnection
 	for _, in := range fc.integrations {
@@ -1488,7 +1501,7 @@ func (s *Service) uhdDeliverable(ctx context.Context, mediaType MediaType) (bool
 			conns = append(conns, ResolvedRouterConnection{ID: in.ID, Config: in.PluginConfig})
 		}
 	}
-	return len(conns) > 0 && routerQualityConfigured(Quality2160p, conns), nil
+	return len(conns) > 0 && routerQualityConfigured(Quality2160p, conns)
 }
 
 // uhdRequestState is a title's 4K request state for the detail page: its
@@ -1505,6 +1518,12 @@ func (s *Service) uhdRequestState(ctx context.Context, viewer Viewer, policy Eff
 		}
 		return state, nil
 	}
+	// The reasons that stop any request (requests off, a blocked account,
+	// the quota) come first.
+	state := requestStateFor(viewer, policy, false, nil)
+	if !state.Requestable {
+		return state, nil
+	}
 	if !policy.AllowUHD {
 		return RequestState{Reason: ReasonUHDNotAllowed}, nil
 	}
@@ -1515,7 +1534,7 @@ func (s *Service) uhdRequestState(ctx context.Context, viewer Viewer, policy Eff
 	if !deliverable {
 		return RequestState{Reason: ReasonUHDUnavailable}, nil
 	}
-	return requestStateFor(viewer, policy, false, nil), nil
+	return state, nil
 }
 
 func (s *Service) ensureRequestsEnabled(ctx context.Context) error {

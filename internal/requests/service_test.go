@@ -2463,15 +2463,10 @@ func (f *certTMDBClient) GetCertification(_ context.Context, _ string, id int) (
 	return f.certs[id], nil
 }
 
-// ratedCeiling implements both EntitlementResolver and ContentRatingResolver.
+// ratedCeiling is an EntitlementResolver with a fixed rating ceiling.
 type ratedCeiling struct {
-	q         string
 	rating    string
 	ratingErr error
-}
-
-func (f ratedCeiling) MaxPlaybackQuality(context.Context, int, string) (string, error) {
-	return f.q, nil
 }
 
 func (f ratedCeiling) MaxContentRating(context.Context, int, string) (string, error) {
