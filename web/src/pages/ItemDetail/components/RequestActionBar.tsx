@@ -20,17 +20,13 @@ import { RequestSeasonsDialog } from "@/components/RequestSeasonsDialog";
 import {
   useCancelMediaRequest,
   useCreateMediaRequest,
-  useMediaRequest,
-  useMyMediaRequests,
   useRequestFeatureStatus,
   useToggleRequestFollow,
 } from "@/hooks/queries/useRequests";
 import { useToggleWatchlistTitle } from "@/hooks/queries/watchlistTitles";
-import { useAuth } from "@/hooks/useAuth";
 import { useViewTransitionNavigate } from "@/hooks/useViewTransition";
 import ViewTransitionLink from "@/components/ViewTransitionLink";
 import {
-  canCancelOwnRequest,
   formatRequestDisplayState,
   formatRequestReason,
   requestDisplayState,
@@ -38,6 +34,7 @@ import {
   type RequestDisplayState,
 } from "@/lib/mediaRequests";
 import { watchlistTitlesAvailable } from "@/lib/watchlistTitles";
+import { useOwnCancellableRequest } from "./useOwnCancellableRequest";
 import ActionBar, {
   type ActionBarLink,
   type ActionBarPrimaryAction,
@@ -79,8 +76,13 @@ export default function RequestActionBar({ item, libraryHref }: RequestActionBar
   const toggleFollow = useToggleRequestFollow();
   const toggleWatchlist = useToggleWatchlistTitle();
   const featureStatus = useRequestFeatureStatus();
-  const ownRequest = useOwnCancellableRequest(item, item.request, false);
-  const own4KRequest = useOwnCancellableRequest(item, item.request_4k, true);
+  const ownRequest = useOwnCancellableRequest(item.media_type, item.tmdb_id, item.request, false);
+  const own4KRequest = useOwnCancellableRequest(
+    item.media_type,
+    item.tmdb_id,
+    item.request_4k,
+    true,
+  );
   // Which of the viewer's requests the cancel dialog is for.
   const [confirmCancel, setConfirmCancel] = useState<MediaRequest | null>(null);
   const [pickSeasons, setPickSeasons] = useState(false);
@@ -92,8 +94,6 @@ export default function RequestActionBar({ item, libraryHref }: RequestActionBar
   // The title's 4K request is separate from the regular one: a title in the
   // library in HD can still be requested in 4K.
   const uhd = item.request_4k;
-  const uhdState = uhd ? requestDisplayState(uhd.status, undefined, uhd.state) : undefined;
-  const UHDStateIcon = uhdState ? STATE_ICONS[uhdState] : undefined;
   const inLibrary =
     item.availability === "available" || state === "available" || Boolean(item.library_content_id);
   const following = item.request.following === true;
@@ -231,15 +231,7 @@ export default function RequestActionBar({ item, libraryHref }: RequestActionBar
       {item.request.download ? (
         <RequestDownloadProgress download={item.request.download} className="mt-3 max-w-xs" />
       ) : null}
-      {uhdState && UHDStateIcon ? (
-        <p className="text-muted-foreground mt-2.5 flex items-center gap-1.5 text-xs">
-          <UHDStateIcon aria-hidden="true" className="size-3.5" />
-          4K: {uhdState === "pending" ? "Requested" : formatRequestDisplayState(uhdState)}
-        </p>
-      ) : null}
-      {uhd?.download ? (
-        <RequestDownloadProgress download={uhd.download} className="mt-2 max-w-xs" />
-      ) : null}
+      <Request4KStatus state={uhd} />
       {confirmCancel ? (
         <CancelRequestDialog
           title={confirmCancel.is_4k ? `${item.title} (4K)` : item.title}
@@ -274,42 +266,20 @@ export default function RequestActionBar({ item, libraryHref }: RequestActionBar
   );
 }
 
-/**
- * The viewer's own regular or 4K request for this title, as `state` names,
- * while they can still cancel it.
- * The detail names the request when it is the account's own (or the viewer is
- * an admin), so that request is read directly and kept only if the account
- * made it; an account's active requests can run past one list page. A detail
- * without the ID falls back to the account's active requests. The title's
- * download progress comes from the detail, so another request downloading is
- * no reason to read the list again.
- */
-function useOwnCancellableRequest(
-  item: RequestMediaDetail,
-  state: RequestState | undefined,
-  is4K: boolean,
-): MediaRequest | undefined {
-  const { user } = useAuth();
-  const mayCancel = state?.status === "pending" || state?.status === "approved";
-  const requestID = state?.request_id;
-  const named = useMediaRequest(requestID, { enabled: mayCancel });
-  const mine = useMyMediaRequests(
-    { outcome: "active" },
-    { enabled: mayCancel && !requestID, pollDownloads: false },
-  );
-  if (!mayCancel) return undefined;
-  if (requestID) {
-    const request = named.data;
-    return request && request.requested_by_user_id === user?.id && canCancelOwnRequest(request)
-      ? request
-      : undefined;
-  }
-  // The title's regular and 4K requests are separate; match the one asked for.
-  return mine.data?.find(
-    (request) =>
-      request.media_type === item.media_type &&
-      request.tmdb_id === item.tmdb_id &&
-      Boolean(request.is_4k) === is4K &&
-      canCancelOwnRequest(request),
+/** The title's 4K request, if it has one: its state and how far its download is. */
+export function Request4KStatus({ state }: { state: RequestState | undefined }) {
+  const display = state ? requestDisplayState(state.status, undefined, state.state) : undefined;
+  if (!state || !display) return null;
+  const Icon = STATE_ICONS[display];
+  return (
+    <>
+      <p className="text-muted-foreground mt-2.5 flex items-center gap-1.5 text-xs">
+        <Icon aria-hidden="true" className="size-3.5" />
+        4K: {display === "pending" ? "Requested" : formatRequestDisplayState(display)}
+      </p>
+      {state.download ? (
+        <RequestDownloadProgress download={state.download} className="mt-2 max-w-xs" />
+      ) : null}
+    </>
   );
 }
