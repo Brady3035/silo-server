@@ -138,6 +138,11 @@ func TestEnsureUHDRequestableReadsTheTitlesRoute(t *testing.T) {
 	if err := svc.ensureUHDRequestable(ctx, allowed, MediaTypeMovie, anime); !errors.Is(err, ErrUHDUnavailable) {
 		t.Fatalf("the 4K server disabled: error = %v, want ErrUHDUnavailable", err)
 	}
+	// Another rule's 4K server is enabled, but not the one this title gets.
+	store.routes[0].UHD = RouteDestination{IntegrationID: "radarr-hd"}
+	if err := svc.ensureUHDRequestable(ctx, allowed, MediaTypeMovie, anime); !errors.Is(err, ErrUHDUnavailable) {
+		t.Fatalf("the title's 4K server disabled, another enabled: error = %v, want ErrUHDUnavailable", err)
+	}
 }
 
 func TestSubmitRoutedSendsEachTierToItsServer(t *testing.T) {

@@ -204,6 +204,16 @@ describe("RequestActionBar cancel", () => {
     expect(screen.queryByRole("button", { name: "Cancel request" })).toBeNull();
   });
 
+  it("offers the viewer's own 4K request to cancel when there is no regular one", () => {
+    mocks.myRequests.mockReturnValue([ownPending(true)]);
+    renderBar({
+      ...heat,
+      request_4k: { requestable: false, reason: "already_requested", status: "pending" },
+    });
+    expect(screen.getByRole("button", { name: "Cancel 4K request" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel request" })).toBeNull();
+  });
+
   it("offers the viewer's own regular request to cancel", () => {
     mocks.myRequests.mockReturnValue([ownPending(true), ownPending(false)]);
     renderBar(othersPending);

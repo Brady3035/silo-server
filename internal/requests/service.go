@@ -806,7 +806,7 @@ func (s *Service) GetDetail(ctx context.Context, viewer Viewer, mediaType MediaT
 	if primaryState.Download, err = s.activeRequestDownload(ctx, primaryRequests[raw.ID]); err != nil {
 		return nil, err
 	}
-	uhdState, err := s.uhdRequestState(ctx, viewer, policy, mediaType, raw.ID)
+	uhdState, err := s.uhdRequestState(ctx, viewer, policy, mediaType, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -1453,29 +1453,31 @@ func (s *Service) ensureUHDRequestable(ctx context.Context, policy EffectivePoli
 	if err != nil {
 		return err
 	}
-	if !uhdDeliverableIn(fc, mediaType) {
+	if !uhdTitleDeliverable(fc, mediaType, facts) {
 		return ErrUHDUnavailable
-	}
-	if routes := fc.routesFor(mediaType); len(routes) > 0 && facts.Captured() {
-		req := Request{MediaType: mediaType, RoutingFacts: facts, IsAnime: facts.Anime}
-		if decision, ok := decideRoutes(routes, req, []Quality{Quality2160p})[Quality2160p]; !ok || decision.Skip {
-			return ErrUHDUnavailable
-		}
 	}
 	return nil
 }
 
-// uhdDeliverable reports whether a 4K request of the media type has
-// somewhere to go; see uhdDeliverableIn.
-func (s *Service) uhdDeliverable(ctx context.Context, mediaType MediaType) (bool, error) {
-	if s.router == nil {
-		return false, nil
+// uhdTitleDeliverable reports whether a title can get a 4K copy. With its
+// routing facts captured, the 4K tier is decided as submission will decide
+// it, and the chosen server must be enabled; without them, some route has to
+// send 4K for the media type (see uhdDeliverableIn).
+func uhdTitleDeliverable(fc *fulfillContext, mediaType MediaType, facts RoutingFacts) bool {
+	if !uhdDeliverableIn(fc, mediaType) {
+		return false
 	}
-	fc, err := s.newFulfillContext(ctx)
-	if err != nil {
-		return false, err
+	routes := fc.routesFor(mediaType)
+	if len(routes) == 0 || !facts.Captured() {
+		return true
 	}
-	return uhdDeliverableIn(fc, mediaType), nil
+	req := Request{MediaType: mediaType, RoutingFacts: facts, IsAnime: facts.Anime}
+	decision, ok := decideRoutes(routes, req, []Quality{Quality2160p})[Quality2160p]
+	if !ok || decision.Skip {
+		return false
+	}
+	in := integrationByID(fc, decision.IntegrationID)
+	return in != nil && in.Enabled
 }
 
 // uhdDeliverableIn reports whether some title of the media type can get a
@@ -1506,7 +1508,8 @@ func uhdDeliverableIn(fc *fulfillContext, mediaType MediaType) bool {
 
 // uhdRequestState is a title's 4K request state for the detail page: its
 // open 4K request, or whether the viewer may make one now.
-func (s *Service) uhdRequestState(ctx context.Context, viewer Viewer, policy EffectivePolicy, mediaType MediaType, tmdbID int) (RequestState, error) {
+func (s *Service) uhdRequestState(ctx context.Context, viewer Viewer, policy EffectivePolicy, mediaType MediaType, detail *tmdb.MediaDetail) (RequestState, error) {
+	tmdbID := detail.ID
 	open, err := s.store.ListActiveByTMDB(ctx, mediaType, []int{tmdbID}, true)
 	if err != nil {
 		return RequestState{}, err
@@ -1527,11 +1530,21 @@ func (s *Service) uhdRequestState(ctx context.Context, viewer Viewer, policy Eff
 	if !policy.AllowUHD {
 		return RequestState{Reason: ReasonUHDNotAllowed}, nil
 	}
-	deliverable, err := s.uhdDeliverable(ctx, mediaType)
-	if err != nil {
-		return RequestState{}, err
+	if s.router == nil {
+		return RequestState{Reason: ReasonUHDUnavailable}, nil
 	}
-	if !deliverable {
+	fc, err := s.newFulfillContext(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return RequestState{}, err
+		}
+		// Only the 4K offer depends on this; the page still loads.
+		slog.WarnContext(ctx, "requests: could not tell whether the title takes 4K", "component", "requests",
+			"tmdb_id", tmdbID, "error", err)
+		return RequestState{Reason: ReasonUHDUnavailable}, nil
+	}
+	// The same per-title answer creating the request gives.
+	if !uhdTitleDeliverable(fc, mediaType, s.routingFacts(ctx, detail)) {
 		return RequestState{Reason: ReasonUHDUnavailable}, nil
 	}
 	return state, nil
