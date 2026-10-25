@@ -23,6 +23,42 @@ quality. Each target change recomputes the request's status and outcome in the
 same transaction (`aggregateStatus`), so after submission the targets own the
 request's state.
 
+## 4K requests
+
+A request asks for one quality (`is_4k`). A regular request gets an HD
+(1080p) target, plus a 4K (2160p) one while `force_dual_quality` is on. A 4K
+request gets a 4K target alone. A title can have one open request of each, so
+the active-request index keys on `is_4k` too, and each is approved, cancelled
+and counted against the requester's quota on its own. Requests made before
+`is_4k` existed are regular ones and keep any 4K target they already have. The
+requester's playback quality no longer decides whether a request gets 4K.
+
+Whether an account may make 4K requests resolves like its quota and approval
+(`EffectivePolicy.AllowUHD`): the account's `uhd_mode` in
+`request_user_limits`, then its access group's in `request_group_limits`, then
+the server-wide `uhd_requests_allowed` in `request_settings`, which starts off.
+A mode of `inherit` defers to the next layer. The v2 API calls these
+`requests_4k` and `requests_4k_default`; a write that leaves them out keeps the
+stored value, and v1 writes never change them.
+
+Creating a 4K request is refused when the account may not make one
+(`ErrUHDNotAllowed`) or no server takes 4K for the media type
+(`ErrUHDUnavailable`): no route with a 4K destination, or, under Standard, no
+server marked 4K. Where a plugin routes by itself, a connection has to say it
+takes 4K (see [Routing](#routing)). The title detail's `request_4k` reports the
+same answers as reasons (`4k_not_allowed`, `4k_unavailable`) before anyone
+asks.
+
+The library cannot tell a 4K copy from an HD one, so it never refuses or
+completes a 4K request. A 4K request is made even when the title is in the
+library, asks for every aired season when it names none, and completes only
+when its 4K target does. Follows and watchlist requests stay on a title's
+regular request.
+
+Every quality a request wants is required. A 4K tier that no route sends, or
+that a matching rule skips, becomes a failed target with the reason, rather
+than leaving the request approved with nothing sent.
+
 ## Routing facts
 
 Creating a request reads the title's TMDB detail once, after the cheap refusals
@@ -84,7 +120,7 @@ does Everything else with no 4K server: "no 4K copy" means the same on a rule
 and on the fallback. Everything else with no HD server makes no HD copy when
 the title's 4K copy goes to a server, so a media type whose servers are all
 marked 4K gets its 4K versions without a failed HD tier; when the 4K copy goes
-nowhere too (a requester without 4K), HD stays undecided and fails, so a
+nowhere too (a regular request), HD stays undecided and fails, so a
 request is never sent nowhere. The admin preview explains a decision route by route: the
 conditions each failed and what it did per tier (sent, skipped, passed on, did
 not match, came after the tier was decided).
@@ -105,12 +141,11 @@ sent yet, the submission retries with backoff; a later tier that fails that way
 becomes a failed target. Status checks go through the plugin installation that
 owns each target's server, and one plugin failing does not discard the statuses
 another reported. A media type with no routes keeps the plugin's own routing:
-every usable connection is handed over and the plugin picks. Without
-`force_dual_quality`, the request asks such a plugin for 4K only when one of
-those connections says it takes 4K (a Sonarr/Radarr `is_default_4k`, or the
-Seerr plugin's `supports_4k` switch), so a Seerr without 4K does not leave a
-failed 4K target beside a finished HD copy. A plugin whose connections carry
-none of these keys is still asked for 4K and decides itself.
+every usable connection is handed over and the plugin picks. A regular request
+asks such a plugin for 4K only under `force_dual_quality`. A 4K request can be
+made only when one of those connections says it takes 4K (a Sonarr/Radarr
+`is_default_4k`, or the Seerr plugin's `supports_4k` switch), or when none
+carries any of these keys and the plugin decides itself.
 
 Admins manage routes through `/api/v2/admin/request-routes` (in the web admin,
 Settings › Requests, which also hides the server switches routing now owns).
@@ -162,8 +197,8 @@ server's own settings: Everything else's overrides do not apply. Anime series
 (see "Routing facts") go to the same servers with Sonarr's anime series type,
 as Seerr sends them. With no server
 marked 4K there is no 4K copy, even with `force_dual_quality`; with only a
-server marked 4K there is no HD copy, and a requester without 4K gets a failed
-HD tier, as under Advanced. A media type
+server marked 4K there is no HD copy, and a regular request gets a failed HD
+tier, as under Advanced. A media type
 whose server is another plugin (Seerr) keeps that plugin's own routing. Targets
 record the route as "Standard".
 
@@ -240,9 +275,9 @@ no idempotency key, so a service the stale call reached may still hold the title
 
 A submission converges the request's targets to the qualities it currently
 wants. A failed target for a quality it no longer wants is deleted, but only
-when that quality set was resolved without error. A failed entitlement lookup
-or a connection skipped for a missing key makes the set look smaller than it
-is, so in either case every failed target is kept for an admin to see. If
+when that quality set was resolved without error. A connection skipped for a
+missing key makes the set look smaller than it is, so then every failed target
+is kept for an admin to see. If
 nothing is left to send, the remaining targets decide the status.
 
 ## Season requests
@@ -423,7 +458,8 @@ The library also completes requests that never reached a router: a `pending`
 request whose title appears needs no approval any more, and a `failed` request
 whose title appears is complete, unless it failed after delivering one quality,
 in which case the failure stays for an admin to retry. Both go through the same
-guarded write as any other completion, and the requester is notified.
+guarded write as any other completion, and the requester is notified. A 4K
+request is left out (see [4K requests](#4k-requests)).
 
 ## Reconcile
 

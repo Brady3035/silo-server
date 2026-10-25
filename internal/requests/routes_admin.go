@@ -329,12 +329,12 @@ func (s *Service) PreviewRoute(ctx context.Context, viewer Viewer, mediaType Med
 			if isStandardRouting(routes, mediaType) {
 				tier.Reason = "The only server is marked 4K, so there is no HD version"
 			}
-			// HD is skipped only because 4K goes out; a requester without 4K
-			// gets neither unless every request also asks for 4K.
+			// HD is skipped only because 4K goes out; a regular request gets
+			// neither unless every request also asks for 4K.
 			if fc.settings.ForceDualQuality {
 				tier.Reason += "."
 			} else {
-				tier.Reason += "; requests from users without 4K fail."
+				tier.Reason += "; regular requests fail."
 			}
 		case decision.Skip && isStandardRouting(routes, mediaType):
 			tier.RouteID, tier.RouteName = decision.RouteID, decision.RouteName

@@ -86,6 +86,11 @@ export default function RequestActionBar({ item, libraryHref }: RequestActionBar
   const seasonPicker = item.media_type === "series" && (item.seasons?.length ?? 0) > 0;
 
   const state = requestDisplayState(item.request.status, undefined, item.request.state);
+  // The title's 4K request is separate from the regular one: a title in the
+  // library in HD can still be requested in 4K.
+  const uhd = item.request_4k;
+  const uhdState = uhd ? requestDisplayState(uhd.status, undefined, uhd.state) : undefined;
+  const UHDStateIcon = uhdState ? STATE_ICONS[uhdState] : undefined;
   const inLibrary =
     item.availability === "available" || state === "available" || Boolean(item.library_content_id);
   const following = item.request.following === true;
@@ -151,6 +156,15 @@ export default function RequestActionBar({ item, libraryHref }: RequestActionBar
         }),
     });
   }
+  if (uhd?.requestable) {
+    secondaryActions.push({
+      id: "request-4k",
+      label: "Request in 4K",
+      icon: Plus,
+      pending: createRequest.isPending,
+      onClick: () => createRequest.mutate({ ...requestInputFromMediaResult(item), is_4k: true }),
+    });
+  }
   if (ownRequest) {
     secondaryActions.push({
       id: "cancel",
@@ -202,6 +216,15 @@ export default function RequestActionBar({ item, libraryHref }: RequestActionBar
       ) : null}
       {item.request.download ? (
         <RequestDownloadProgress download={item.request.download} className="mt-3 max-w-xs" />
+      ) : null}
+      {uhdState && UHDStateIcon ? (
+        <p className="text-muted-foreground mt-2.5 flex items-center gap-1.5 text-xs">
+          <UHDStateIcon aria-hidden="true" className="size-3.5" />
+          4K: {uhdState === "pending" ? "Requested" : formatRequestDisplayState(uhdState)}
+        </p>
+      ) : null}
+      {uhd?.download ? (
+        <RequestDownloadProgress download={uhd.download} className="mt-2 max-w-xs" />
       ) : null}
       {ownRequest ? (
         <CancelRequestDialog

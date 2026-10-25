@@ -252,28 +252,6 @@ func TestCreateRequestReplacesOwnFailedRequestAtQuota(t *testing.T) {
 	}
 }
 
-func TestSubmitKeepsFailedTargetWhenEntitlementLookupFails(t *testing.T) {
-	store := newFakeStore()
-	store.integrations = []Integration{routerInst("router-1")}
-	store.requests["r1"] = &Request{ID: "r1", MediaType: MediaTypeMovie, TMDBID: 550, Status: StatusQueued, Outcome: OutcomeFailed}
-	store.targets = map[string][]Target{"r1": {
-		{ID: 1, RequestID: "r1", IntegrationID: "router-1", Quality: Quality1080p, Status: StatusCompleted},
-		{ID: 2, RequestID: "r1", Quality: Quality2160p, Status: StatusFailed, LastError: "radarr 4k unreachable"},
-	}}
-	store.targetSeq = 2
-	svc := newTestService(store)
-	svc.SetRouterProvider(&fakeRouterProvider{})
-	svc.SetEntitlementResolver(failingCeiling{})
-
-	if _, err := svc.Retry(context.Background(), Viewer{UserID: 1, IsAdmin: true}, "r1"); err != nil {
-		t.Fatalf("Retry returned error: %v", err)
-	}
-	targets, _ := store.ListTargets(context.Background(), "r1")
-	if len(targets) != 2 {
-		t.Fatalf("targets = %+v, want the failed 4K target kept after a failed entitlement lookup", targets)
-	}
-}
-
 func TestSubmitBackoff(t *testing.T) {
 	for attempts, want := range map[int]time.Duration{
 		1:  5 * time.Minute,
@@ -301,7 +279,6 @@ func TestRetryDropsFailedTargetForUnwantedQuality(t *testing.T) {
 	}}
 	store.targetSeq = 2
 	svc, router := newRoutedService(store)
-	svc.SetEntitlementResolver(fixedCeiling{q: "1080p"})
 
 	req, err := svc.Retry(context.Background(), Viewer{UserID: 1, IsAdmin: true}, "r1")
 	if err != nil {

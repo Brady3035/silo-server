@@ -117,7 +117,7 @@ func routingStore(facts RoutingFacts) *fakeStore {
 func TestSubmitRoutedSendsEachTierToItsServer(t *testing.T) {
 	store := routingStore(capturedFacts(RoutingFacts{Anime: true}))
 	svc, router := newRoutedService(store)
-	svc.SetEntitlementResolver(fixedCeiling{q: "2160p"})
+	store.settings.ForceDualQuality = true
 
 	if _, err := svc.submitApprovedRequest(context.Background(), *store.requests["r1"], Viewer{}, nil); err != nil {
 		t.Fatalf("submit: %v", err)
@@ -159,7 +159,7 @@ func TestSubmitRoutedDropsUnroutedFourK(t *testing.T) {
 	store := routingStore(capturedFacts(RoutingFacts{}))
 	store.routes[0].UHD = RouteDestination{}
 	svc, router := newRoutedService(store)
-	svc.SetEntitlementResolver(fixedCeiling{q: "2160p"})
+	store.settings.ForceDualQuality = true
 
 	if _, err := svc.submitApprovedRequest(context.Background(), *store.requests["r1"], Viewer{}, nil); err != nil {
 		t.Fatalf("submit: %v", err)
@@ -200,7 +200,7 @@ func TestDecideRoutesSkipsHDWithoutAnHDServer(t *testing.T) {
 		wantStep RouteStep
 	}{
 		{"4K goes out", fourKOnly(), movie, both, "fallback", true, RouteStepSkips},
-		{"requester without 4K", fourKOnly(), movie, []Quality{Quality1080p}, "", false, RouteStepPasses},
+		{"regular request", fourKOnly(), movie, []Quality{Quality1080p}, "", false, RouteStepPasses},
 		{"4K skipped too", noServers, movie, both, "", false, RouteStepPasses},
 		{"a rule sends HD", fourKOnly(), anime, both, "anime", false, RouteStepDecided},
 		{"a rule sends 4K", animeTo4K, anime, both, "fallback", true, RouteStepSkips},
@@ -218,13 +218,12 @@ func TestDecideRoutesSkipsHDWithoutAnHDServer(t *testing.T) {
 	}
 }
 
-// A requester without 4K has nothing to receive when no server takes HD, so
-// the HD tier still fails and says why.
-func TestSubmitRoutedFailsHDForARequesterWithout4K(t *testing.T) {
+// A regular request has nothing to receive when no server takes HD, so the
+// HD tier still fails and says why.
+func TestSubmitRoutedFailsHDForARegularRequest(t *testing.T) {
 	store := routingStore(capturedFacts(RoutingFacts{}))
 	store.routes[0].HD = RouteDestination{}
 	svc, router := newRoutedService(store)
-	svc.SetEntitlementResolver(fixedCeiling{q: "1080p"})
 
 	if _, err := svc.submitApprovedRequest(context.Background(), *store.requests["r1"], Viewer{}, nil); err != nil {
 		t.Fatalf("submit: %v", err)
@@ -394,7 +393,7 @@ func TestSubmitRoutedDropsTargetsForTheOtherTier(t *testing.T) {
 			router := &fakeRouterProvider{targetsOverride: tc.returned}
 			svc := newTestService(store)
 			svc.SetRouterProvider(router)
-			svc.SetEntitlementResolver(fixedCeiling{q: "2160p"})
+			store.settings.ForceDualQuality = true
 
 			if _, err := svc.submitApprovedRequest(context.Background(), *store.requests["r1"], Viewer{}, nil); err != nil {
 				t.Fatalf("submit: %v", err)
