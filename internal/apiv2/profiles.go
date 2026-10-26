@@ -376,7 +376,7 @@ type PlaybackSession struct {
 	PlayMethod               string  `json:"play_method" doc:"The negotiated method as the node reported it" example:"direct"`
 	ReportingNode            string  `json:"reporting_node" doc:"Identifier of the node serving the stream" example:"api"`
 	NodeDisplayName          string  `json:"node_display_name" doc:"Empty when the node has no display name" example:""`
-	FileDuration             *int    `json:"file_duration" nullable:"true" doc:"Seconds; null when unknown" example:"8520"`
+	FileDuration             *int    `json:"file_duration" nullable:"true" doc:"Length in seconds of what position_seconds is measured against: the file, or the whole book for a multi-file audiobook; null when unknown" example:"8520"`
 	StartedAt                Instant `json:"started_at" example:"2026-01-02T03:04:05.000Z"`
 	UpdatedAt                Instant `json:"updated_at" example:"2026-01-02T03:04:05.000Z"`
 	PositionSeconds          float64 `json:"position_seconds" example:"1234.5"`
