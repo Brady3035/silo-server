@@ -284,7 +284,7 @@ func (l *PlaybackSessionsLoader) load(ctx context.Context, query PlaybackSession
 			s.play_method,
 			s.reporting_node,
 			COALESCE(remote_node.name, ''),
-			mf.duration,
+			COALESCE(ROUND(s.timeline_duration_seconds)::bigint, mf.duration),
 			s.started_at,
 			s.updated_at,
 			COALESCE(s.position_seconds, 0),
