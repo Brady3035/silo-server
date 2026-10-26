@@ -1004,6 +1004,26 @@ func (m *SessionManager) UpdateProgress(sessionID string, position float64, isPa
 	return m.updateProgress(sessionID, position, isPaused, -1)
 }
 
+// UpdateProgressListened is UpdateProgress for a playing client that also
+// reports how many seconds it played since its previous report; the session's
+// watch time credits that report (see WatchTime.Credit).
+func (m *SessionManager) UpdateProgressListened(sessionID string, position, listened float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	s.Position = position
+	s.IsPaused = false
+	s.StopReported = false
+	s.streamRevision++
+	m.touchSessionLocked(s)
+	s.Watch.Credit(position, listened, s.StartedAt, s.UpdatedAt)
+	return nil
+}
+
 // UpdateProgressSample keeps a confirmed pause state when an already accepted
 // sequenced sample is replayed. Position and activity still persist normally.
 func (m *SessionManager) UpdateProgressSample(sessionID string, sample ProgressSampleV3) error {

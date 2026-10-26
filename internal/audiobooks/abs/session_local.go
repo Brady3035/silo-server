@@ -53,11 +53,8 @@ type localPlaybackSession struct {
 	DisplayTitle  string  `json:"displayTitle"`
 	// UpdatedAt is when the client last updated the session, in Unix
 	// milliseconds. Some clients send a fraction.
-	UpdatedAt  float64 `json:"updatedAt"`
-	DeviceInfo struct {
-		ClientName    string `json:"clientName"`
-		ClientVersion string `json:"clientVersion"`
-	} `json:"deviceInfo"`
+	UpdatedAt  float64       `json:"updatedAt"`
+	DeviceInfo absDeviceInfo `json:"deviceInfo"`
 }
 
 // isLive reports whether the session was updated recently enough to be

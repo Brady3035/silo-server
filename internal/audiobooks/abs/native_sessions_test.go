@@ -93,7 +93,7 @@ func TestHandlePlayStartCreatesNativePlaybackSession(t *testing.T) {
 		http.MethodPost,
 		"/api/items/book-1/play",
 		map[string]string{"libraryItemId": "book-1"},
-		nil,
+		[]byte(`{"deviceInfo":{"clientName":"AudioBooth","clientVersion":"1.2.0"}}`),
 		"1",
 		"profile-1",
 		h.handlePlayStart,
@@ -119,6 +119,9 @@ func TestHandlePlayStartCreatesNativePlaybackSession(t *testing.T) {
 	}
 	if !native.DisableProgressPersistence {
 		t.Fatalf("native session should disable progress persistence")
+	}
+	if native.ClientName != "AudioBooth" || native.ClientVersion != "1.2.0" {
+		t.Fatalf("native client = %q %q, want the deviceInfo's AudioBooth 1.2.0", native.ClientName, native.ClientVersion)
 	}
 	if native.Position != 123.5 {
 		t.Fatalf("native position = %v, want 123.5", native.Position)

@@ -388,7 +388,7 @@ func (h *Handler) applySessionSync(ctx context.Context, a ctxAuth, sess ABSPlayb
 				"session_id", sess.ID, "content_id", sess.ContentID, "error", err)
 		}
 	}
-	h.updateNativePlaybackProgress(ctx, sess.ID, p.CurrentTime)
+	h.updateNativePlaybackProgress(ctx, sess.ID, p.CurrentTime, p.timeDelta())
 
 	// Realtime push to other connected clients.
 	h.publish(a.UserID, "user_item_progress_updated", map[string]any{

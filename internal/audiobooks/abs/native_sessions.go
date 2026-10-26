@@ -24,6 +24,7 @@ import (
 type PlaybackSessionManager interface {
 	StartSessionWithFilesContext(ctx context.Context, userID int, profileID string, effectiveFileID int, requestedFileID int, method playback.PlayMethod, transcodeAudio bool) (*playback.Session, error)
 	UpdateProgress(sessionID string, position float64, isPaused bool) error
+	UpdateProgressListened(sessionID string, position, listened float64) error
 	UpdateStreamState(sessionID string, state playback.SessionStreamState) error
 	BeginTransport(sessionID string) error
 	EndTransport(sessionID string) error
@@ -66,6 +67,7 @@ func (h *Handler) startNativePlaybackSession(
 	a ctxAuth,
 	files []*models.MediaFile,
 	startPosition float64,
+	device absDeviceInfo,
 ) (*playback.Session, error) {
 	if h == nil || h.deps.NativeSessions == nil || len(files) == 0 {
 		return nil, nil
@@ -76,7 +78,7 @@ func (h *Handler) startNativePlaybackSession(
 	}
 
 	file := files[0]
-	sessionCtx := playback.WithClientInfo(r.Context(), absPlaybackClientInfoFromRequest(r))
+	sessionCtx := playback.WithClientInfo(r.Context(), absPlaybackClientInfo(r, device))
 	session, err := h.deps.NativeSessions.StartSessionWithFilesContext(
 		sessionCtx,
 		userID,
@@ -144,11 +146,14 @@ func (h *Handler) startNativePlaybackSession(
 	return session, nil
 }
 
-func (h *Handler) updateNativePlaybackProgress(ctx context.Context, sessionID string, position float64) {
+// updateNativePlaybackProgress mirrors a session sync. Its timeListened is the
+// time actually listened since the previous sync, so it is what the native
+// session credits as listening time; the position may have jumped by a seek.
+func (h *Handler) updateNativePlaybackProgress(ctx context.Context, sessionID string, position, listened float64) {
 	if h == nil || h.deps.NativeSessions == nil || sessionID == "" {
 		return
 	}
-	if err := h.deps.NativeSessions.UpdateProgress(sessionID, position, false); err != nil {
+	if err := h.deps.NativeSessions.UpdateProgressListened(sessionID, position, listened); err != nil {
 		if !errors.Is(err, playback.ErrSessionNotFound) {
 			slog.WarnContext(ctx, "abs session sync: update native session progress failed", "component", "audiobooks",
 				"session_id", sessionID, "position", position, "error", err)
@@ -199,11 +204,7 @@ func (h *Handler) trackReportedPlayback(r *http.Request, a ctxAuth, access catal
 	for _, f := range files {
 		bookDuration += float64(f.Duration)
 	}
-	client := absPlaybackClientInfoFromRequest(r)
-	if name := strings.TrimSpace(sess.DeviceInfo.ClientName); name != "" {
-		client.Name, client.Version = name, sess.DeviceInfo.ClientVersion
-	}
-	client = client.Normalized()
+	client := absPlaybackClientInfo(r, sess.DeviceInfo).Normalized()
 	file := files[0]
 	h.deps.NativeSessions.RegisterReconstructed(&playback.Session{
 		ID:                         id,
@@ -290,6 +291,23 @@ func writeNativePlaybackStartError(w http.ResponseWriter, err error) {
 		slog.Error("abs play: start native playback session failed", "error", err)
 		http.Error(w, "failed to start playback session", http.StatusInternalServerError)
 	}
+}
+
+// absDeviceInfo is the part of the deviceInfo an Audiobookshelf client sends
+// with /play and with its local sessions that names the client.
+type absDeviceInfo struct {
+	ClientName    string `json:"clientName"`
+	ClientVersion string `json:"clientVersion"`
+}
+
+// absPlaybackClientInfo names the client of a play: the deviceInfo the client
+// sent, else the request headers.
+func absPlaybackClientInfo(r *http.Request, device absDeviceInfo) playback.ClientInfo {
+	client := absPlaybackClientInfoFromRequest(r)
+	if name := strings.TrimSpace(device.ClientName); name != "" {
+		client.Name, client.Version = name, strings.TrimSpace(device.ClientVersion)
+	}
+	return client
 }
 
 func absPlaybackClientInfoFromRequest(r *http.Request) playback.ClientInfo {
