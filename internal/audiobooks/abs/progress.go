@@ -448,17 +448,12 @@ func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if final != nil {
-		// The final sync needs the same item access a periodic one does.
-		// Without it the session still closes, at its last synced position.
-		access, err := h.accessFilterForAuth(r.Context(), a)
-		if err == nil {
-			if item, _ := h.deps.MediaStore.GetAudiobookByID(r.Context(), sess.ContentID, access); item != nil {
-				if err := h.applySessionSync(r.Context(), a, sess, *final); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-			}
+	// The final sync needs the same item access a periodic one does.
+	// Without it the session still closes, at its last synced position.
+	if final != nil && h.audiobookVisible(r.Context(), a, sess.ContentID) {
+		if err := h.applySessionSync(r.Context(), a, sess, *final); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 	}
 
@@ -473,6 +468,16 @@ func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 		"libraryItemId": sess.ContentID,
 	})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// audiobookVisible reports whether the caller can see the audiobook.
+func (h *Handler) audiobookVisible(ctx context.Context, a ctxAuth, contentID string) bool {
+	access, err := h.accessFilterForAuth(ctx, a)
+	if err != nil {
+		return false
+	}
+	item, err := h.deps.MediaStore.GetAudiobookByID(ctx, contentID, access)
+	return err == nil && item != nil
 }
 
 // ---------------------------------------------------------------------------
