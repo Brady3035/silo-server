@@ -313,13 +313,20 @@ type syncPayload struct {
 }
 
 // timeDelta returns the accumulated listening time from whichever spelling
-// the client used. Both fields are tried; non-zero wins.
+// the client used. Both fields are tried; non-zero wins. It is bounded to
+// [0, maxSyncListeningSeconds], so a client cannot lower the stored total or
+// overflow it.
 func (p syncPayload) timeDelta() float64 {
+	delta := p.TimeListened
 	if p.TimeListening != 0 {
-		return p.TimeListening
+		delta = p.TimeListening
 	}
-	return p.TimeListened
+	return min(max(delta, 0), maxSyncListeningSeconds)
 }
+
+// maxSyncListeningSeconds bounds the listening time one sync can report: a
+// day, far beyond any interval between syncs.
+const maxSyncListeningSeconds = 24 * 60 * 60
 
 // handleSessionSync — PATCH /abs/api/session/{sid}/sync
 // Heartbeat endpoint the ABS mobile client calls every ~10 s during playback.
@@ -379,13 +386,15 @@ func (h *Handler) handleSessionSync(w http.ResponseWriter, r *http.Request) {
 // position on the session row, then the rest mirrorSessionSync writes.
 func (h *Handler) applySessionSync(ctx context.Context, a ctxAuth, sess ABSPlaybackSession, p syncPayload) error {
 	// Accumulate listening time and update position in abs_playback_sessions.
-	// A failure here is returned once the rest is written, so the resume
-	// position and the native session still get the listener's position.
-	sessionErr := h.deps.PlaybackSessionStore.SyncPlaybackSession(
+	// When this fails the client gets an error and syncs again, so nothing
+	// else is written: the retry would count the same listening twice.
+	if err := h.deps.PlaybackSessionStore.SyncPlaybackSession(
 		ctx, sess.ID, p.CurrentTime, int(p.timeDelta()),
-	)
+	); err != nil {
+		return err
+	}
 	h.mirrorSessionSync(ctx, a, sess, p)
-	return sessionErr
+	return nil
 }
 
 // mirrorSessionSync writes a sync beyond the session row: the resume

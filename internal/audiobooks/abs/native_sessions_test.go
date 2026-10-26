@@ -234,3 +234,23 @@ func TestHandleSessionCloseFinishesNativePlaybackSession(t *testing.T) {
 		})
 	}
 }
+
+// A sync's listening time is added to the session's stored total, so it is
+// bounded: a negative value must not lower the total, and a huge one must not
+// overflow it.
+func TestSyncPayloadTimeDeltaIsBounded(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		p    syncPayload
+		want float64
+	}{
+		{name: "timeListening", p: syncPayload{TimeListening: 20}, want: 20},
+		{name: "timeListened", p: syncPayload{TimeListened: 20}, want: 20},
+		{name: "negative", p: syncPayload{TimeListened: -500}, want: 0},
+		{name: "huge", p: syncPayload{TimeListened: 1e12}, want: maxSyncListeningSeconds},
+	} {
+		if got := tc.p.timeDelta(); got != tc.want {
+			t.Errorf("%s: timeDelta = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
