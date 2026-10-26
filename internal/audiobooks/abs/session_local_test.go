@@ -3,6 +3,7 @@ package abs
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"testing"
@@ -103,15 +104,18 @@ func TestSyncLocalSession_TracksLivePlayback(t *testing.T) {
 		name         string
 		startedAt    time.Time
 		updatedAt    time.Time
+		total        float64
 		wantSessions int
 		wantPlayed   float64
 	}{
 		// The ten seconds listened before the first report count.
-		{name: "new play", startedAt: now.Add(-10 * time.Second), updatedAt: now, wantSessions: 1, wantPlayed: 10},
+		{name: "new play", startedAt: now.Add(-10 * time.Second), updatedAt: now, total: 10, wantSessions: 1, wantPlayed: 10},
+		// Without a listening total they are measured from the position.
+		{name: "new play without a total", startedAt: now.Add(-10 * time.Second), updatedAt: now, wantSessions: 1, wantPlayed: 10},
 		// A play rebuilt after an idle expiry takes the client's running
 		// total as its baseline: what it covers was counted before.
-		{name: "rebuilt play", startedAt: now.Add(-time.Hour), updatedAt: now, wantSessions: 1},
-		{name: "late report", startedAt: now.Add(-time.Hour), updatedAt: now.Add(-15 * time.Minute)},
+		{name: "rebuilt play", startedAt: now.Add(-time.Hour), updatedAt: now, total: 10, wantSessions: 1},
+		{name: "late report", startedAt: now.Add(-time.Hour), updatedAt: now.Add(-15 * time.Minute), total: 10},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			media := &playStartMediaStore{
@@ -126,11 +130,12 @@ func TestSyncLocalSession_TracksLivePlayback(t *testing.T) {
 			syncer := &recordingPlaybackSessionSyncer{}
 			h := New(Dependencies{MediaStore: media, ProgressStore: prog, NativeSessions: nativeSessions, NativeSessionSyncer: syncer})
 
-			// The second report repeats the running total, so it credits nothing.
+			// The second report repeats the running total and jumps ahead by a
+			// scrub, so it credits nothing.
 			for _, position := range []float64{40, 162.9} {
-				body := fmt.Appendf(nil, `{"id":"client-sess-1","libraryItemId":"book-1","currentTime":%v,"timeListening":10,`+
+				body := fmt.Appendf(nil, `{"id":"client-sess-1","libraryItemId":"book-1","currentTime":%v,"timeListening":%v,`+
 					`"startTime":30,"startedAt":%d,"updatedAt":%d,"deviceInfo":{"clientName":"Prologue","clientVersion":"2026.5.4"}}`,
-					position, tc.startedAt.UnixMilli(), tc.updatedAt.UnixMilli())
+					position, tc.total, tc.startedAt.UnixMilli(), tc.updatedAt.UnixMilli())
 				rec := dispatchABSWithParams(http.MethodPost, "/api/session/local", nil, body, "1", "profile-1", h.handleSyncLocalSession)
 				if rec.Code != http.StatusOK {
 					t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -159,7 +164,7 @@ func TestSyncLocalSession_TracksLivePlayback(t *testing.T) {
 			if s.ClientName != "Prologue" || s.ClientVersion != "2026.5.4" {
 				t.Errorf("client = %q %q, want Prologue 2026.5.4", s.ClientName, s.ClientVersion)
 			}
-			if s.Watch.PlayedSeconds != tc.wantPlayed {
+			if math.Abs(s.Watch.PlayedSeconds-tc.wantPlayed) > 0.01 {
 				t.Errorf("played seconds = %v, want %v", s.Watch.PlayedSeconds, tc.wantPlayed)
 			}
 			if !s.ReportOnly || !s.DisableProgressPersistence || s.IdleGrace != reportedPlaybackGrace {

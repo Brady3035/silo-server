@@ -132,7 +132,7 @@ func adminPlaybackSessionOf(v handlers.AdminPlaybackSessionView) AdminPlaybackSe
 		PlayMethod:               v.PlayMethod,
 		ReportingNode:            v.ReportingNode,
 		NodeDisplayName:          v.NodeDisplayName,
-		FileDuration:             v.FileDuration,
+		FileDuration:             v.MeasuredDuration(),
 		StartedAt:                NewInstant(v.StartedAt),
 		UpdatedAt:                NewInstant(v.UpdatedAt),
 		PositionSeconds:          v.PositionSeconds,

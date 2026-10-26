@@ -56,8 +56,10 @@ type ABSPlaybackSessionStore interface {
 	GetPlaybackSession(ctx context.Context, id string) (ABSPlaybackSession, error)
 	// SyncPlaybackSession updates position + accumulated listening time.
 	SyncPlaybackSession(ctx context.Context, id string, currentPositionSeconds float64, timeListeningSeconds int) error
-	// ClosePlaybackSession sets closed_at to now().
-	ClosePlaybackSession(ctx context.Context, id string) error
+	// ClosePlaybackSession sets closed_at to now(), applying final first when
+	// it is not nil, atomically. It reports whether this call closed the
+	// session; a session already closed is left as it is.
+	ClosePlaybackSession(ctx context.Context, id string, final *FinalSync) (bool, error)
 	// CloseOpenSessionsForPrincipal closes all active sessions for a user
 	// profile, used when logout revokes that profile's tokens.
 	CloseOpenSessionsForPrincipal(ctx context.Context, userID, profileID string) error
@@ -66,6 +68,12 @@ type ABSPlaybackSessionStore interface {
 	// ListClosedSessions returns paginated closed sessions for (user, profile)
 	// ordered by started_at DESC. Returns (rows, totalRowCount, error).
 	ListClosedSessions(ctx context.Context, userID, profileID string, limit, offset int) ([]ABSPlaybackSession, int, error)
+}
+
+// FinalSync is the last position and listening time a close carries.
+type FinalSync struct {
+	PositionSeconds  float64
+	ListeningSeconds int
 }
 
 // Stats is the aggregated /me/listening-stats response shape.
@@ -368,8 +376,7 @@ func (h *Handler) handleSessionSync(w http.ResponseWriter, r *http.Request) {
 }
 
 // applySessionSync records one sync of an open session: listening time and
-// position on the session row, the resume position, and the position of the
-// mirrored native playback session.
+// position on the session row, then the rest mirrorSessionSync writes.
 func (h *Handler) applySessionSync(ctx context.Context, a ctxAuth, sess ABSPlaybackSession, p syncPayload) error {
 	// Accumulate listening time and update position in abs_playback_sessions.
 	// A failure here is returned once the rest is written, so the resume
@@ -377,7 +384,14 @@ func (h *Handler) applySessionSync(ctx context.Context, a ctxAuth, sess ABSPlayb
 	sessionErr := h.deps.PlaybackSessionStore.SyncPlaybackSession(
 		ctx, sess.ID, p.CurrentTime, int(p.timeDelta()),
 	)
+	h.mirrorSessionSync(ctx, a, sess, p)
+	return sessionErr
+}
 
+// mirrorSessionSync writes a sync beyond the session row: the resume
+// position, the mirrored native playback session's position and listening,
+// and the realtime events other clients follow.
+func (h *Handler) mirrorSessionSync(ctx context.Context, a ctxAuth, sess ABSPlaybackSession, p syncPayload) {
 	// Update position in user_watch_progress. Must NOT be a full upsert —
 	// see comment in handleSetItemProgress re: not overwriting is_finished.
 	if h.deps.ProgressStore != nil {
@@ -404,7 +418,6 @@ func (h *Handler) applySessionSync(ctx context.Context, a ctxAuth, sess ABSPlayb
 		"currentTime":   p.CurrentTime,
 		"timeListening": p.timeDelta(),
 	})
-	return sessionErr
 }
 
 // handleSessionClose — POST /abs/api/session/{sid}/close
@@ -435,19 +448,22 @@ func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The final sync needs the same item access a periodic one does, and
-	// none applies to a session already closed: a repeated close must not
-	// send its stale position to the user's other clients.
-	if final != nil && sess.ClosedAt == nil && h.audiobookVisible(r.Context(), a, sess.ContentID) {
-		if err := h.applySessionSync(r.Context(), a, sess, *final); err != nil {
-			slog.WarnContext(r.Context(), "abs session close: final sync failed", "component", "audiobooks",
-				"session_id", sid, "error", err)
-		}
+	// The final sync needs the same item access a periodic one does.
+	var closeSync *FinalSync
+	if final != nil && h.audiobookVisible(r.Context(), a, sess.ContentID) {
+		closeSync = &FinalSync{PositionSeconds: final.CurrentTime, ListeningSeconds: int(final.timeDelta())}
 	}
-
-	if err := h.deps.PlaybackSessionStore.ClosePlaybackSession(r.Context(), sid); err != nil {
+	// The final sync and the close are one statement. Of concurrent or
+	// repeated closes only the one that closes the session applies its final
+	// sync, so a stale one never reaches the resume position, the native
+	// session or the user's other clients.
+	closed, err := h.deps.PlaybackSessionStore.ClosePlaybackSession(r.Context(), sid, closeSync)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if closed && closeSync != nil {
+		h.mirrorSessionSync(r.Context(), a, sess, *final)
 	}
 	h.stopNativePlaybackSession(r.Context(), sid)
 

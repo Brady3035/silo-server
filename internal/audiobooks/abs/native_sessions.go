@@ -36,9 +36,9 @@ type PlaybackSessionManager interface {
 	// FinishSession ends the play and runs the manager's finish hooks, which
 	// write the admin playback history row.
 	FinishSession(ctx context.Context, sessionID string) error
-	// RegisterReconstructed adds a session under a caller-chosen ID, or
-	// returns the live one already under it.
-	RegisterReconstructed(s *playback.Session) *playback.Session
+	// RegisterReportOnly adds a report-only session under a caller-chosen ID
+	// unless the account already holds maxPerUser of them.
+	RegisterReportOnly(s *playback.Session, maxPerUser int) bool
 }
 
 const (
@@ -46,6 +46,11 @@ const (
 	// client only reports through /session/local is over. Such clients send
 	// no stop, so silence is the only end there is.
 	reportedPlaybackGrace = 90 * time.Second
+	// maxReportedPlaysPerAccount bounds the reported plays one account can
+	// have live at once. They are outside stream limits, so without it an
+	// account could post any number of fresh session IDs. It is well above a
+	// household's devices.
+	maxReportedPlaysPerAccount = 10
 	// liveReportWindow separates live playback from catch-up: a session last
 	// updated longer ago than this is offline listening synced late, or a
 	// client re-sending an old session, not a play happening now.
@@ -236,10 +241,15 @@ func (h *Handler) registerReportedPlayback(r *http.Request, a ctxAuth, access ca
 	// covers was credited before, or was not seen live.
 	if began, ok := sess.beganRecently(now); ok {
 		native.StartedAt = began
+		native.Watch.Observe(sess.StartTime, false, began)
 	} else {
 		native.ReportedListening = sess.TimeListening
 	}
-	h.deps.NativeSessions.RegisterReconstructed(native)
+	if !h.deps.NativeSessions.RegisterReportOnly(native, maxReportedPlaysPerAccount) {
+		slog.WarnContext(ctx, "abs local session sync: too many reported plays for the account; not tracking this one", "component", "audiobooks",
+			"user_id", userID, "limit", maxReportedPlaysPerAccount)
+		return false
+	}
 	return true
 }
 

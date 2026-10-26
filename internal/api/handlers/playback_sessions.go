@@ -100,6 +100,11 @@ type playbackSessionRow struct {
 	RoutingEgressNodeID      *int    `json:"routing_egress_node_id,omitempty"`
 	RoutingEgressNodeName    string  `json:"routing_egress_node_name,omitempty"`
 	CompatOrigin             bool    `json:"-"`
+	// TimelineDuration is the length the position is measured against when
+	// that is more than the file, such as a whole multi-file audiobook. The
+	// frozen v1 shape keeps file_duration as the file's duration; v2 reads
+	// MeasuredDuration.
+	TimelineDuration *int `json:"-"`
 }
 
 // playbackSessionsCapabilitiesResponse advertises the additive fields of the
@@ -284,7 +289,8 @@ func (l *PlaybackSessionsLoader) load(ctx context.Context, query PlaybackSession
 			s.play_method,
 			s.reporting_node,
 			COALESCE(remote_node.name, ''),
-			COALESCE(ROUND(s.timeline_duration_seconds)::bigint, mf.duration),
+			mf.duration,
+			ROUND(s.timeline_duration_seconds)::bigint,
 			s.started_at,
 			s.updated_at,
 			COALESCE(s.position_seconds, 0),
@@ -389,7 +395,7 @@ func (l *PlaybackSessionsLoader) load(ctx context.Context, query PlaybackSession
 			&s.SessionID, &s.UserID, &s.Username, &s.ProfileID, &s.MediaFileID, &s.RequestedMediaFileID, &s.ContentID,
 			&s.MediaTitle, &s.MediaType, &s.SeriesName, &s.EpisodeName, &s.SeasonNumber, &s.EpisodeNumber,
 			&posterPath,
-			&s.PlayMethod, &s.ReportingNode, &s.NodeDisplayName, &s.FileDuration, &s.StartedAt, &s.UpdatedAt,
+			&s.PlayMethod, &s.ReportingNode, &s.NodeDisplayName, &s.FileDuration, &s.TimelineDuration, &s.StartedAt, &s.UpdatedAt,
 			&s.PositionSeconds, &s.IsPaused, &s.HasPlaybackControl, &s.ClientIP, &s.ClientName, &s.ClientVersion,
 			&s.ClientBuild, &s.ClientChannel,
 			&s.ClientUserAgent, &s.AudioTrackIndex, &s.TranscodeAudio, &streamBitrateKbps,
@@ -894,6 +900,16 @@ func (l *PlaybackSessionsLoader) populateProfileNames(ctx context.Context, sessi
 
 // AdminPlaybackSessionView is the shared enriched diagnostic read model. It does
 // not grant authority to control or terminate the observed session.
+// MeasuredDuration is the length in seconds the session's position is
+// measured against: the whole timeline when the session has one, else the
+// file's duration.
+func (s playbackSessionRow) MeasuredDuration() *int {
+	if s.TimelineDuration != nil {
+		return s.TimelineDuration
+	}
+	return s.FileDuration
+}
+
 type AdminPlaybackSessionView = playbackSessionRow
 
 func (h *AdminHandler) AdminPlaybackSessionsAvailable() bool {

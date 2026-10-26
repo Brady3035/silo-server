@@ -478,7 +478,7 @@ func playbackSessionOf(v handlers.PlaybackSessionView) PlaybackSession {
 		ContentID: v.ContentID, MediaTitle: v.MediaTitle, MediaType: v.MediaType,
 		SeriesName: v.SeriesName, EpisodeName: v.EpisodeName, SeasonNumber: v.SeasonNumber, EpisodeNumber: v.EpisodeNumber,
 		PosterURL: v.PosterURL, PlayMethod: v.PlayMethod, ReportingNode: v.ReportingNode, NodeDisplayName: v.NodeDisplayName,
-		FileDuration: v.FileDuration, StartedAt: NewInstant(v.StartedAt), UpdatedAt: NewInstant(v.UpdatedAt),
+		FileDuration: v.MeasuredDuration(), StartedAt: NewInstant(v.StartedAt), UpdatedAt: NewInstant(v.UpdatedAt),
 		PositionSeconds: v.PositionSeconds, IsPaused: v.IsPaused, HasPlaybackControl: v.HasPlaybackControl,
 		ClientIP: v.ClientIP, ClientName: v.ClientName, ClientVersion: v.ClientVersion, ClientBuild: v.ClientBuild,
 		ClientChannel: v.ClientChannel, ClientLabel: v.ClientLabel, ClientLabelFull: v.ClientLabelFull, ClientUserAgent: v.ClientUserAgent,

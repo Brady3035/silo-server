@@ -764,6 +764,40 @@ func (m *SessionManager) RegisterReconstructed(s *Session) *Session {
 	return s
 }
 
+// RegisterReportOnly adds a report-only session (see Session.ReportOnly)
+// under its own ID, unless the account already has maxPerUser of them live.
+// Report-only sessions are outside stream limits, so this cap is what bounds
+// how many one account can hold. It reports whether a session is now live
+// under the ID, which is also true when one already was.
+func (m *SessionManager) RegisterReportOnly(s *Session, maxPerUser int) bool {
+	if s == nil || s.ID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.sessions[s.ID]; ok {
+		return true
+	}
+	count := 0
+	for _, other := range m.sessions {
+		if other.UserID == s.UserID && other.ReportOnly {
+			count++
+		}
+	}
+	if count >= maxPerUser {
+		return false
+	}
+	now := time.Now()
+	if s.StartedAt.IsZero() {
+		s.StartedAt = now
+	}
+	s.ReportOnly = true
+	s.UpdatedAt = now
+	s.LastActivityAt = now
+	m.sessions[s.ID] = s
+	return true
+}
+
 // RegisterReconstructedWithLimits is RegisterReconstructed plus the same per-user
 // admission caps StartSession enforces. Token-carried reconstruct replays a
 // signed recipe to rebuild a session lost to a restart; without a cap check a

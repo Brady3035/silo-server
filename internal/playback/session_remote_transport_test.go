@@ -92,6 +92,27 @@ func TestReportOnlySessionDoesNotCountTowardLimits(t *testing.T) {
 	}
 }
 
+// Report-only sessions are outside stream limits, so a per-account cap bounds
+// them; a session already live under the ID is not refused.
+func TestRegisterReportOnlyCapsPerAccount(t *testing.T) {
+	manager := NewSessionManager(0, 0)
+	for _, tc := range []struct {
+		id     string
+		userID int
+		want   bool
+	}{
+		{"a", 7, true},
+		{"b", 7, true},
+		{"c", 7, false},
+		{"a", 7, true},
+		{"d", 8, true},
+	} {
+		if got := manager.RegisterReportOnly(&Session{ID: tc.id, UserID: tc.userID}, 2); got != tc.want {
+			t.Errorf("register %s for user %d = %v, want %v", tc.id, tc.userID, got, tc.want)
+		}
+	}
+}
+
 // A client that reports a running listening total is credited how far it
 // rose past the highest total seen, so a late, lower report credits nothing.
 // A client that never reports a total is measured from its position.
