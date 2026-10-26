@@ -25,6 +25,7 @@ type PlaybackSessionManager interface {
 	StartSessionWithFilesContext(ctx context.Context, userID int, profileID string, effectiveFileID int, requestedFileID int, method playback.PlayMethod, transcodeAudio bool) (*playback.Session, error)
 	UpdateProgress(sessionID string, position float64, isPaused bool) error
 	UpdateProgressListened(sessionID string, position, listened float64) error
+	UpdateProgressReported(sessionID string, position, total float64) error
 	UpdateStreamState(sessionID string, state playback.SessionStreamState) error
 	BeginTransport(sessionID string) error
 	EndTransport(sessionID string) error
@@ -99,10 +100,7 @@ func (h *Handler) startNativePlaybackSession(
 		session.DisableProgressPersistence = true
 	}
 
-	var bookDuration float64
-	for _, f := range files {
-		bookDuration += float64(f.Duration)
-	}
+	bookDuration := bookDurationSeconds(files)
 	if err := h.deps.NativeSessions.SetTimelineDuration(session.ID, bookDuration); err != nil {
 		slog.WarnContext(r.Context(), "abs play: set native session book duration failed", "component", "audiobooks",
 			"session_id", session.ID, "error", err)
@@ -171,49 +169,49 @@ func (h *Handler) updateNativePlaybackProgress(ctx context.Context, sessionID st
 //
 // The native session ID is derived from the account, profile and client
 // session ID, so every report of one play, on any replica and after an idle
-// expiry, lands on the same session and the same admin history row. A report
-// never fails because of this: the client is playing whether or not Silo
-// shows it.
-func (h *Handler) trackReportedPlayback(r *http.Request, a ctxAuth, access catalog.AccessFilter, sess localPlaybackSession) {
-	if h == nil || h.deps.NativeSessions == nil || sess.ID == "" || !sess.isLive(time.Now()) {
-		return
+// expiry, lands on the same session and the same admin history row. The
+// session is report-only: it may be playing a downloaded copy, so it never
+// counts toward stream limits. A report never fails because of this: the
+// client is playing whether or not Silo shows it. It reports whether it
+// started a session, which the caller syncs to the admin views.
+func (h *Handler) trackReportedPlayback(r *http.Request, a ctxAuth, access catalog.AccessFilter, sess localPlaybackSession) bool {
+	now := time.Now()
+	if h == nil || h.deps.NativeSessions == nil || sess.ID == "" || !sess.isLive(now) {
+		return false
 	}
 	userID, err := strconv.Atoi(a.UserID)
 	if err != nil {
-		return
+		return false
 	}
 	ctx := r.Context()
 	id := uuid.NewSHA1(reportedPlaybackNamespace, []byte(a.UserID+"\x00"+a.ProfileID+"\x00"+sess.ID)).String()
-	if _, err := h.deps.NativeSessions.GetSession(id); err == nil {
-		if err := h.deps.NativeSessions.UpdateProgress(id, sess.CurrentTime, false); err != nil && !errors.Is(err, playback.ErrSessionNotFound) {
-			slog.WarnContext(ctx, "abs local session sync: update native session progress failed", "component", "audiobooks",
-				"session_id", id, "error", err)
-		}
-		return
+	_, err = h.deps.NativeSessions.GetSession(id)
+	started := err != nil
+	if started && !h.registerReportedPlayback(r, a, access, userID, id, sess, now) {
+		return false
 	}
+	if err := h.deps.NativeSessions.UpdateProgressReported(id, sess.CurrentTime, sess.TimeListening); err != nil && !errors.Is(err, playback.ErrSessionNotFound) {
+		slog.WarnContext(ctx, "abs local session sync: update native session progress failed", "component", "audiobooks",
+			"session_id", id, "error", err)
+	}
+	return started
+}
 
+// registerReportedPlayback starts the report-only native session for a
+// reported play (see trackReportedPlayback). It reports whether it did.
+func (h *Handler) registerReportedPlayback(r *http.Request, a ctxAuth, access catalog.AccessFilter, userID int, id string, sess localPlaybackSession, now time.Time) bool {
+	ctx := r.Context()
 	files, err := h.deps.MediaStore.GetMediaFiles(ctx, sess.LibraryItemID, access)
 	if err != nil || len(files) == 0 {
 		if err != nil {
 			slog.WarnContext(ctx, "abs local session sync: load files for native session failed", "component", "audiobooks",
 				"library_item_id", sess.LibraryItemID, "error", err)
 		}
-		return
-	}
-	var bookDuration float64
-	for _, f := range files {
-		bookDuration += float64(f.Duration)
+		return false
 	}
 	client := absPlaybackClientInfo(r, sess.DeviceInfo).Normalized()
 	file := files[0]
-	// Measure from where the client says the play began, so the stretch
-	// before its first report counts; the watch-time seek check still judges
-	// it, so a resume that jumped is not credited.
-	var watch playback.WatchTime
-	if started := time.UnixMilli(int64(sess.StartedAt)); sess.StartedAt > 0 && started.Before(time.Now()) {
-		watch.Observe(sess.StartTime, false, started)
-	}
-	h.deps.NativeSessions.RegisterReconstructed(&playback.Session{
+	native := &playback.Session{
 		ID:                         id,
 		UserID:                     userID,
 		ProfileID:                  a.ProfileID,
@@ -227,15 +225,31 @@ func (h *Handler) trackReportedPlayback(r *http.Request, a ctxAuth, access catal
 		ClientUserAgent:            client.UserAgent,
 		StreamBitrateKbps:          max(file.Bitrate, 0),
 		DisableProgressPersistence: true,
-		TimelineDuration:           bookDuration,
+		TimelineDuration:           bookDurationSeconds(files),
 		IdleGrace:                  reportedPlaybackGrace,
-		Watch:                      watch,
-	})
-	if err := h.deps.NativeSessions.UpdateProgress(id, sess.CurrentTime, false); err != nil {
-		slog.WarnContext(ctx, "abs local session sync: seed native session progress failed", "component", "audiobooks",
-			"session_id", id, "error", err)
+		ReportOnly:                 true,
 	}
-	h.syncNativeSessionsNow(ctx, "abs_local_start")
+	// A play that began moments ago is measured from its start, so the
+	// listening before its first report counts. A session rebuilt for an
+	// older play (after an idle expiry, or on another replica) only takes
+	// the client's running total as the count to measure from: what it
+	// covers was credited before, or was not seen live.
+	if began, ok := sess.beganRecently(now); ok {
+		native.StartedAt = began
+	} else {
+		native.ReportedListening = sess.TimeListening
+	}
+	h.deps.NativeSessions.RegisterReconstructed(native)
+	return true
+}
+
+// bookDurationSeconds is the length of a book made of files.
+func bookDurationSeconds(files []*models.MediaFile) float64 {
+	var total float64
+	for _, f := range files {
+		total += float64(f.Duration)
+	}
+	return total
 }
 
 func (h *Handler) stopNativePlaybackSession(ctx context.Context, sessionID string) {
@@ -313,7 +327,10 @@ type absDeviceInfo struct {
 func absPlaybackClientInfo(r *http.Request, device absDeviceInfo) playback.ClientInfo {
 	client := absPlaybackClientInfoFromRequest(r)
 	if name := strings.TrimSpace(device.ClientName); name != "" {
-		client.Name, client.Version = name, strings.TrimSpace(device.ClientVersion)
+		client.Name = name
+		if version := strings.TrimSpace(device.ClientVersion); version != "" {
+			client.Version = version
+		}
 	}
 	return client
 }

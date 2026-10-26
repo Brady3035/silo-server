@@ -95,17 +95,23 @@ func TestSyncLocalSession_ExistingRow_UsesUpdate(t *testing.T) {
 
 // Plappa and Prologue never call /play: they report a live play through
 // /session/local every few seconds. Live reports of one client session make
-// one native playback session; a late report (offline listening, or a client
-// re-sending an old session) only moves the resume position.
+// one report-only native playback session; a late report (offline listening,
+// or a client re-sending an old session) only moves the resume position.
 func TestSyncLocalSession_TracksLivePlayback(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {
 		name         string
+		startedAt    time.Time
 		updatedAt    time.Time
 		wantSessions int
+		wantPlayed   float64
 	}{
-		{name: "live", updatedAt: now, wantSessions: 1},
-		{name: "late", updatedAt: now.Add(-15 * time.Minute)},
+		// The ten seconds listened before the first report count.
+		{name: "new play", startedAt: now.Add(-10 * time.Second), updatedAt: now, wantSessions: 1, wantPlayed: 10},
+		// A play rebuilt after an idle expiry takes the client's running
+		// total as its baseline: what it covers was counted before.
+		{name: "rebuilt play", startedAt: now.Add(-time.Hour), updatedAt: now, wantSessions: 1},
+		{name: "late report", startedAt: now.Add(-time.Hour), updatedAt: now.Add(-15 * time.Minute)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			media := &playStartMediaStore{
@@ -117,12 +123,14 @@ func TestSyncLocalSession_TracksLivePlayback(t *testing.T) {
 			}
 			prog := &positionRecordingProgressFake{}
 			nativeSessions := playback.NewSessionManager(0, 0)
-			h := New(Dependencies{MediaStore: media, ProgressStore: prog, NativeSessions: nativeSessions})
+			syncer := &recordingPlaybackSessionSyncer{}
+			h := New(Dependencies{MediaStore: media, ProgressStore: prog, NativeSessions: nativeSessions, NativeSessionSyncer: syncer})
 
+			// The second report repeats the running total, so it credits nothing.
 			for _, position := range []float64{40, 162.9} {
-				body := fmt.Appendf(nil, `{"id":"client-sess-1","libraryItemId":"book-1","currentTime":%v,`+
+				body := fmt.Appendf(nil, `{"id":"client-sess-1","libraryItemId":"book-1","currentTime":%v,"timeListening":10,`+
 					`"startTime":30,"startedAt":%d,"updatedAt":%d,"deviceInfo":{"clientName":"Prologue","clientVersion":"2026.5.4"}}`,
-					position, tc.updatedAt.Add(-10*time.Second).UnixMilli(), tc.updatedAt.UnixMilli())
+					position, tc.startedAt.UnixMilli(), tc.updatedAt.UnixMilli())
 				rec := dispatchABSWithParams(http.MethodPost, "/api/session/local", nil, body, "1", "profile-1", h.handleSyncLocalSession)
 				if rec.Code != http.StatusOK {
 					t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -136,6 +144,11 @@ func TestSyncLocalSession_TracksLivePlayback(t *testing.T) {
 			if len(sessions) != tc.wantSessions {
 				t.Fatalf("native sessions = %d, want %d", len(sessions), tc.wantSessions)
 			}
+			// A started play reaches the admin views at once; later reports
+			// wait for the periodic sync.
+			if syncer.calls != tc.wantSessions {
+				t.Errorf("admin view syncs = %d, want %d", syncer.calls, tc.wantSessions)
+			}
 			if tc.wantSessions == 0 {
 				return
 			}
@@ -146,13 +159,11 @@ func TestSyncLocalSession_TracksLivePlayback(t *testing.T) {
 			if s.ClientName != "Prologue" || s.ClientVersion != "2026.5.4" {
 				t.Errorf("client = %q %q, want Prologue 2026.5.4", s.ClientName, s.ClientVersion)
 			}
-			// 30 to 40 in the ten seconds before the first report was played;
-			// the jump to 162.9 was a scrub.
-			if s.Watch.PlayedSeconds != 10 {
-				t.Errorf("played seconds = %v, want 10", s.Watch.PlayedSeconds)
+			if s.Watch.PlayedSeconds != tc.wantPlayed {
+				t.Errorf("played seconds = %v, want %v", s.Watch.PlayedSeconds, tc.wantPlayed)
 			}
-			if !s.DisableProgressPersistence || s.IdleGrace != reportedPlaybackGrace {
-				t.Errorf("progress persistence disabled = %v, idle grace = %v", s.DisableProgressPersistence, s.IdleGrace)
+			if !s.ReportOnly || !s.DisableProgressPersistence || s.IdleGrace != reportedPlaybackGrace {
+				t.Errorf("report only = %v, progress persistence disabled = %v, idle grace = %v", s.ReportOnly, s.DisableProgressPersistence, s.IdleGrace)
 			}
 		})
 	}

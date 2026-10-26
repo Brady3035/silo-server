@@ -421,19 +421,17 @@ func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := chi.URLParam(r, "sid")
+	// The final sync is best effort: a body that cannot be read still
+	// closes the session, at its last synced position.
 	var final *syncPayload
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	if len(bytes.TrimSpace(raw)) > 0 {
+	if raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)); err == nil && len(bytes.TrimSpace(raw)) > 0 {
 		var p syncPayload
-		if err := json.Unmarshal(raw, &p); err != nil {
-			http.Error(w, "invalid body", http.StatusBadRequest)
-			return
+		if err := json.Unmarshal(raw, &p); err == nil {
+			final = &p
+		} else {
+			slog.WarnContext(r.Context(), "abs session close: ignoring unreadable final sync", "component", "audiobooks",
+				"session_id", sid, "error", err)
 		}
-		final = &p
 	}
 	if h.deps.PlaybackSessionStore == nil {
 		// No store wired — accept close gracefully.
@@ -448,12 +446,13 @@ func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The final sync needs the same item access a periodic one does.
-	// Without it the session still closes, at its last synced position.
-	if final != nil && h.audiobookVisible(r.Context(), a, sess.ContentID) {
+	// The final sync needs the same item access a periodic one does, and
+	// none applies to a session already closed: a repeated close must not
+	// send its stale position to the user's other clients.
+	if final != nil && sess.ClosedAt == nil && h.audiobookVisible(r.Context(), a, sess.ContentID) {
 		if err := h.applySessionSync(r.Context(), a, sess, *final); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			slog.WarnContext(r.Context(), "abs session close: final sync failed", "component", "audiobooks",
+				"session_id", sid, "error", err)
 		}
 	}
 

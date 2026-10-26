@@ -81,6 +81,35 @@ func TestSessionIdleGraceReplacesDefaults(t *testing.T) {
 	}
 }
 
+// A report-only play may be a downloaded copy, so it never takes a stream
+// slot from the account.
+func TestReportOnlySessionDoesNotCountTowardLimits(t *testing.T) {
+	manager := NewSessionManager(1, 0)
+	manager.RegisterReconstructed(&Session{ID: "reported-1", UserID: 7, ReportOnly: true})
+	if _, err := manager.StartSessionWithFiles(7, "profile-1", 42, 42, PlayDirect, false); err != nil {
+		t.Fatalf("start a stream beside a report-only play: %v", err)
+	}
+}
+
+// A client that reports a running listening total is credited its change; a
+// total that went down starts a new count and credits nothing.
+func TestUpdateProgressReportedCreditsTheChange(t *testing.T) {
+	manager := NewSessionManager(0, 0)
+	manager.RegisterReconstructed(&Session{ID: "reported-1", UserID: 7, StartedAt: time.Now().Add(-time.Minute)})
+	for _, total := range []float64{30, 5} {
+		if err := manager.UpdateProgressReported("reported-1", 100, total); err != nil {
+			t.Fatalf("report: %v", err)
+		}
+	}
+	s, err := manager.GetSession("reported-1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if s.Watch.PlayedSeconds != 30 || s.ReportedListening != 5 {
+		t.Fatalf("played = %v, reported = %v, want 30 and 5", s.Watch.PlayedSeconds, s.ReportedListening)
+	}
+}
+
 // backdatePlaybackTestSession makes a session look as if its client last
 // reported age ago.
 func backdatePlaybackTestSession(manager *SessionManager, sessionID string, age time.Duration) {

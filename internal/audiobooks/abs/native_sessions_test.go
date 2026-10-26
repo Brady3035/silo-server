@@ -155,12 +155,17 @@ func TestHandleSessionCloseFinishesNativePlaybackSession(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		body         string
+		closed       bool
 		wantPosition float64
 	}{
 		{name: "empty body", wantPosition: 100},
 		// A close body is the client's final sync (#3099): the play is
 		// recorded where the listener stopped, not at the last sync.
 		{name: "final sync", body: `{"currentTime":3700,"timeListened":30}`, wantPosition: 3700},
+		// The final sync is best effort; the session closes regardless.
+		{name: "unreadable body", body: `not json`, wantPosition: 100},
+		// A repeated close applies no stale final sync.
+		{name: "already closed", body: `{"currentTime":3700,"timeListened":30}`, closed: true, wantPosition: 100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			absSessions := &fakePlaybackSessionStore{}
@@ -176,11 +181,16 @@ func TestHandleSessionCloseFinishesNativePlaybackSession(t *testing.T) {
 			if err := nativeSessions.UpdateProgress(native.ID, 100, false); err != nil {
 				t.Fatalf("seed native position: %v", err)
 			}
+			var closedAt *time.Time
+			if tc.closed {
+				closedAt = new(time.Now())
+			}
 			_ = absSessions.InsertPlaybackSession(context.Background(), ABSPlaybackSession{
 				ID:        native.ID,
 				UserID:    "1",
 				ProfileID: "profile-1",
 				ContentID: "book-1",
+				ClosedAt:  closedAt,
 			})
 			syncer := &recordingPlaybackSessionSyncer{}
 			h := New(Dependencies{

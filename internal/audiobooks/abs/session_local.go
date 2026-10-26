@@ -61,13 +61,21 @@ type localPlaybackSession struct {
 }
 
 // isLive reports whether the session was updated recently enough to be
-// playback happening now rather than a late sync. See liveReportWindow.
+// playback happening now rather than a late sync. See liveReportWindow. It
+// trusts the device's clock: a clock off by more than the window is never
+// live.
 func (s localPlaybackSession) isLive(now time.Time) bool {
-	if s.UpdatedAt <= 0 {
-		return false
-	}
-	age := now.Sub(time.UnixMilli(int64(s.UpdatedAt)))
-	return age.Abs() <= liveReportWindow
+	return recentUnixMilli(s.UpdatedAt, now)
+}
+
+// beganRecently returns when the play began, if that was within
+// liveReportWindow of now.
+func (s localPlaybackSession) beganRecently(now time.Time) (time.Time, bool) {
+	return time.UnixMilli(int64(s.StartedAt)), recentUnixMilli(s.StartedAt, now) && s.StartedAt <= float64(now.UnixMilli())
+}
+
+func recentUnixMilli(ms float64, now time.Time) bool {
+	return ms > 0 && now.Sub(time.UnixMilli(int64(ms))).Abs() <= liveReportWindow
 }
 
 // localSyncResult mirrors the per-session object ABS returns from
@@ -77,6 +85,9 @@ type localSyncResult struct {
 	Success        bool   `json:"success"`
 	Error          string `json:"error,omitempty"`
 	ProgressSynced bool   `json:"progressSynced"`
+	// startedPlayback reports that the session started a native playback
+	// session, which the handler syncs to the admin views once per request.
+	startedPlayback bool
 }
 
 // handleSyncLocalSession — POST /session/local
@@ -99,6 +110,9 @@ func (h *Handler) handleSyncLocalSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	res := h.syncOneLocalSession(r, a, access, sess)
+	if res.startedPlayback {
+		h.syncNativeSessionsNow(r.Context(), "abs_local_start")
+	}
 	if !res.Success {
 		// Real ABS: res.status(500).send(result.error).
 		http.Error(w, res.Error, http.StatusInternalServerError)
@@ -132,6 +146,7 @@ func (h *Handler) handleSyncLocalSessions(w http.ResponseWriter, r *http.Request
 		http.Error(w, "resolve access: "+err.Error(), http.StatusForbidden)
 		return
 	}
+	started := false
 	results := make([]localSyncResult, 0, len(body.Sessions))
 	for _, raw := range body.Sessions {
 		var sess localPlaybackSession
@@ -140,7 +155,12 @@ func (h *Handler) handleSyncLocalSessions(w http.ResponseWriter, r *http.Request
 			results = append(results, localSyncResult{Success: false, Error: "invalid session"})
 			continue
 		}
-		results = append(results, h.syncOneLocalSession(r, a, access, sess))
+		res := h.syncOneLocalSession(r, a, access, sess)
+		started = started || res.startedPlayback
+		results = append(results, res)
+	}
+	if started {
+		h.syncNativeSessionsNow(r.Context(), "abs_local_start")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
@@ -181,7 +201,7 @@ func (h *Handler) syncOneLocalSession(r *http.Request, a ctxAuth, access catalog
 	}
 
 	res.Success = true
-	h.trackReportedPlayback(r, a, access, sess)
+	res.startedPlayback = h.trackReportedPlayback(r, a, access, sess)
 
 	// Persist the offline resume position into user_watch_progress.
 	//

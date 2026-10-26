@@ -112,6 +112,14 @@ type Session struct {
 	// are the only sign of playback, which sends no stop: the play is over
 	// once this long passes without one.
 	IdleGrace time.Duration
+	// ReportOnly marks a play the server knows only from the client's
+	// progress reports. It may be playing a downloaded copy, so it is shown in
+	// the admin views but never counts toward stream limits.
+	ReportOnly bool
+	// ReportedListening is the running listening total the client sent with
+	// its latest report, for a client that reports one (see
+	// UpdateProgressReported).
+	ReportedListening float64
 	// StopReported marks a session a client reported stopped without an ID
 	// that could end it (#1454). It only hides the session from the live
 	// admin view: pause state and idle grace are untouched, so a stale stop
@@ -1015,13 +1023,37 @@ func (m *SessionManager) UpdateProgressListened(sessionID string, position, list
 	if !ok {
 		return ErrSessionNotFound
 	}
+	m.creditProgressLocked(s, position, listened)
+	return nil
+}
+
+// UpdateProgressReported is UpdateProgressListened for a client that reports
+// its listening as a running total for the play: the session credits the
+// change since the previous report. A total that went down starts a new
+// count and credits nothing.
+func (m *SessionManager) UpdateProgressReported(sessionID string, position, total float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	listened := max(total-s.ReportedListening, 0)
+	s.ReportedListening = total
+	m.creditProgressLocked(s, position, listened)
+	return nil
+}
+
+// creditProgressLocked records a playing report and credits the seconds the
+// client says it listened since its previous one.
+func (m *SessionManager) creditProgressLocked(s *Session, position, listened float64) {
 	s.Position = position
 	s.IsPaused = false
 	s.StopReported = false
 	s.streamRevision++
 	m.touchSessionLocked(s)
 	s.Watch.Credit(position, listened, s.StartedAt, s.UpdatedAt)
-	return nil
 }
 
 // UpdateProgressSample keeps a confirmed pause state when an already accepted
@@ -2027,6 +2059,9 @@ func (m *SessionManager) countsTowardLimitsLocked(s *Session, now time.Time) boo
 	// release from a stale local timestamp before cleanup or an explicit stop.
 	if s.IsJellyfinCompat && m.compatExpiryClaimer != nil {
 		return true
+	}
+	if s.ReportOnly {
+		return false
 	}
 	if s.activeTransportCount > 0 {
 		return true
