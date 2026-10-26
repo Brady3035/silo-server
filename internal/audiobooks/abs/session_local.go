@@ -51,8 +51,11 @@ type localPlaybackSession struct {
 	CurrentTime   float64 `json:"currentTime"`
 	TimeListening float64 `json:"timeListening"`
 	DisplayTitle  string  `json:"displayTitle"`
-	// UpdatedAt is when the client last updated the session, in Unix
-	// milliseconds. Some clients send a fraction.
+	// StartTime and StartedAt are the position the play began at and when,
+	// in Unix milliseconds; UpdatedAt is when the client last updated the
+	// session. Some clients send fractional milliseconds.
+	StartTime  float64       `json:"startTime"`
+	StartedAt  float64       `json:"startedAt"`
 	UpdatedAt  float64       `json:"updatedAt"`
 	DeviceInfo absDeviceInfo `json:"deviceInfo"`
 }

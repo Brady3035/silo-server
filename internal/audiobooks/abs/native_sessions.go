@@ -206,6 +206,13 @@ func (h *Handler) trackReportedPlayback(r *http.Request, a ctxAuth, access catal
 	}
 	client := absPlaybackClientInfo(r, sess.DeviceInfo).Normalized()
 	file := files[0]
+	// Measure from where the client says the play began, so the stretch
+	// before its first report counts; the watch-time seek check still judges
+	// it, so a resume that jumped is not credited.
+	var watch playback.WatchTime
+	if started := time.UnixMilli(int64(sess.StartedAt)); sess.StartedAt > 0 && started.Before(time.Now()) {
+		watch.Observe(sess.StartTime, false, started)
+	}
 	h.deps.NativeSessions.RegisterReconstructed(&playback.Session{
 		ID:                         id,
 		UserID:                     userID,
@@ -222,6 +229,7 @@ func (h *Handler) trackReportedPlayback(r *http.Request, a ctxAuth, access catal
 		DisableProgressPersistence: true,
 		TimelineDuration:           bookDuration,
 		IdleGrace:                  reportedPlaybackGrace,
+		Watch:                      watch,
 	})
 	if err := h.deps.NativeSessions.UpdateProgress(id, sess.CurrentTime, false); err != nil {
 		slog.WarnContext(ctx, "abs local session sync: seed native session progress failed", "component", "audiobooks",

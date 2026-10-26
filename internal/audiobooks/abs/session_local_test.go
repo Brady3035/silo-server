@@ -120,8 +120,9 @@ func TestSyncLocalSession_TracksLivePlayback(t *testing.T) {
 			h := New(Dependencies{MediaStore: media, ProgressStore: prog, NativeSessions: nativeSessions})
 
 			for _, position := range []float64{40, 162.9} {
-				body := fmt.Appendf(nil, `{"id":"client-sess-1","libraryItemId":"book-1","currentTime":%v,"updatedAt":%d,`+
-					`"deviceInfo":{"clientName":"Prologue","clientVersion":"2026.5.4"}}`, position, tc.updatedAt.UnixMilli())
+				body := fmt.Appendf(nil, `{"id":"client-sess-1","libraryItemId":"book-1","currentTime":%v,`+
+					`"startTime":30,"startedAt":%d,"updatedAt":%d,"deviceInfo":{"clientName":"Prologue","clientVersion":"2026.5.4"}}`,
+					position, tc.updatedAt.Add(-10*time.Second).UnixMilli(), tc.updatedAt.UnixMilli())
 				rec := dispatchABSWithParams(http.MethodPost, "/api/session/local", nil, body, "1", "profile-1", h.handleSyncLocalSession)
 				if rec.Code != http.StatusOK {
 					t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
@@ -144,6 +145,11 @@ func TestSyncLocalSession_TracksLivePlayback(t *testing.T) {
 			}
 			if s.ClientName != "Prologue" || s.ClientVersion != "2026.5.4" {
 				t.Errorf("client = %q %q, want Prologue 2026.5.4", s.ClientName, s.ClientVersion)
+			}
+			// 30 to 40 in the ten seconds before the first report was played;
+			// the jump to 162.9 was a scrub.
+			if s.Watch.PlayedSeconds != 10 {
+				t.Errorf("played seconds = %v, want 10", s.Watch.PlayedSeconds)
 			}
 			if !s.DisableProgressPersistence || s.IdleGrace != reportedPlaybackGrace {
 				t.Errorf("progress persistence disabled = %v, idle grace = %v", s.DisableProgressPersistence, s.IdleGrace)
