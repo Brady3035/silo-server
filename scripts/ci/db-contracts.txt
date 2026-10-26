@@ -30,6 +30,7 @@
 ./internal/scanner TestFinalizeVariantsRetotalsPartsLeftByARenameDB
 ./internal/scanner TestFinalizeVariantsReadsWholeGroupFoundOutsideTheScopeDB
 ./internal/scanner TestScanKeepsFileRowAcrossRenameDB
+./internal/scanner TestScanIndexesFileWithNonUTF8Name
 ./migrations TestScanRunForeignKeysHaveLeadingIndexesDB
 
 # A watched special does not anchor Next Up for a series with regular seasons.
@@ -65,6 +66,10 @@
 
 # Scan membership reconciliation retries a transaction Postgres aborts as a deadlock victim.
 ./internal/catalog TestFolderMembershipReconciliationRetriesDeadlockDB
+
+# A subtree scan of a title folder deleted under a reachable library root
+# marks its files missing and removes the title from the library.
+./internal/scanner TestScanSubtreeReconcilesDeletedTitleFolderDB
 
 # Stale membership removal locks the series before it deletes, in the order
 # curated rebind and split take them.
@@ -210,6 +215,7 @@
 ./internal/markers TestContributionStoreBlocksSameTargetWithDifferentTimes
 ./internal/markers TestContributionStoreCandidatesApplyEachProvidersRules
 ./internal/markers TestProviderConfigDefaultSharingDB
+./internal/markers TestProviderConfigEnsureDefaultSharingDB
 ./internal/markers TestProviderConfigPatchKeepsConcurrentOptOutDB
 ./cmd/silo TestStopDefaultMarkerSharingInTxDB
 ./internal/markers TestContributionStoreAmendResubmitsChangedMarkers
@@ -554,3 +560,7 @@
 # A stored collection's Jellyfin BoxSet page skips members the viewer can't see
 # without shortening the page or shifting later pages.
 ./internal/jellycompat TestBoxSetChildrenPageVisibleMembersDB
+
+# A server set up before the setup wizard saved its marker sharing choice keeps
+# sharing by default; a database with no account waits for the wizard.
+./migrations TestMarkersShareByDefaultExistingInstallsMigrationPostgres
