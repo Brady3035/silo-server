@@ -3,6 +3,7 @@ package playback
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -91,22 +92,38 @@ func TestReportOnlySessionDoesNotCountTowardLimits(t *testing.T) {
 	}
 }
 
-// A client that reports a running listening total is credited its change; a
-// total that went down starts a new count and credits nothing.
-func TestUpdateProgressReportedCreditsTheChange(t *testing.T) {
-	manager := NewSessionManager(0, 0)
-	manager.RegisterReconstructed(&Session{ID: "reported-1", UserID: 7, StartedAt: time.Now().Add(-time.Minute)})
-	for _, total := range []float64{30, 5} {
-		if err := manager.UpdateProgressReported("reported-1", 100, total); err != nil {
-			t.Fatalf("report: %v", err)
-		}
-	}
-	s, err := manager.GetSession("reported-1")
-	if err != nil {
-		t.Fatalf("get session: %v", err)
-	}
-	if s.Watch.PlayedSeconds != 30 || s.ReportedListening != 5 {
-		t.Fatalf("played = %v, reported = %v, want 30 and 5", s.Watch.PlayedSeconds, s.ReportedListening)
+// A client that reports a running listening total is credited how far it
+// rose past the highest total seen, so a late, lower report credits nothing.
+// A client that never reports a total is measured from its position.
+func TestUpdateProgressReported(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		reports      [][2]float64 // position, total
+		wantPlayed   float64
+		wantReported float64
+	}{
+		{name: "late lower total", reports: [][2]float64{{100, 10}, {100, 5}}, wantPlayed: 10, wantReported: 10},
+		{name: "no total", reports: [][2]float64{{110, 0}}, wantPlayed: 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := NewSessionManager(0, 0)
+			started := time.Now().Add(-10 * time.Second)
+			var watch WatchTime
+			watch.Observe(100, false, started)
+			manager.RegisterReconstructed(&Session{ID: "reported-1", UserID: 7, StartedAt: started, Watch: watch})
+			for _, r := range tc.reports {
+				if err := manager.UpdateProgressReported("reported-1", r[0], r[1]); err != nil {
+					t.Fatalf("report: %v", err)
+				}
+			}
+			s, err := manager.GetSession("reported-1")
+			if err != nil {
+				t.Fatalf("get session: %v", err)
+			}
+			if math.Abs(s.Watch.PlayedSeconds-tc.wantPlayed) > 0.01 || s.ReportedListening != tc.wantReported {
+				t.Fatalf("played = %v, reported = %v, want %v and %v", s.Watch.PlayedSeconds, s.ReportedListening, tc.wantPlayed, tc.wantReported)
+			}
+		})
 	}
 }
 

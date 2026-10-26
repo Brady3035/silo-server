@@ -85,9 +85,6 @@ type localSyncResult struct {
 	Success        bool   `json:"success"`
 	Error          string `json:"error,omitempty"`
 	ProgressSynced bool   `json:"progressSynced"`
-	// startedPlayback reports that the session started a native playback
-	// session, which the handler syncs to the admin views once per request.
-	startedPlayback bool
 }
 
 // handleSyncLocalSession — POST /session/local
@@ -109,8 +106,8 @@ func (h *Handler) handleSyncLocalSession(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "resolve access: "+err.Error(), http.StatusForbidden)
 		return
 	}
-	res := h.syncOneLocalSession(r, a, access, sess)
-	if res.startedPlayback {
+	res, started := h.syncOneLocalSession(r, a, access, sess)
+	if started {
 		h.syncNativeSessionsNow(r.Context(), "abs_local_start")
 	}
 	if !res.Success {
@@ -155,8 +152,8 @@ func (h *Handler) handleSyncLocalSessions(w http.ResponseWriter, r *http.Request
 			results = append(results, localSyncResult{Success: false, Error: "invalid session"})
 			continue
 		}
-		res := h.syncOneLocalSession(r, a, access, sess)
-		started = started || res.startedPlayback
+		res, startedOne := h.syncOneLocalSession(r, a, access, sess)
+		started = started || startedOne
 		results = append(results, res)
 	}
 	if started {
@@ -167,9 +164,11 @@ func (h *Handler) handleSyncLocalSessions(w http.ResponseWriter, r *http.Request
 
 // syncOneLocalSession applies one local session's position to the caller's
 // media progress, mirrors it into a native playback session while it is live
-// (see trackReportedPlayback), and returns the ABS-shaped per-session result.
-// It never panics and never propagates an error to fail a batch.
-func (h *Handler) syncOneLocalSession(r *http.Request, a ctxAuth, access catalog.AccessFilter, sess localPlaybackSession) localSyncResult {
+// (see trackReportedPlayback), and returns the ABS-shaped per-session result
+// and whether it started a native session, which the handler syncs to the
+// admin views once per request. It never panics and never propagates an error
+// to fail a batch.
+func (h *Handler) syncOneLocalSession(r *http.Request, a ctxAuth, access catalog.AccessFilter, sess localPlaybackSession) (localSyncResult, bool) {
 	ctx := r.Context()
 	res := localSyncResult{ID: sess.ID}
 
@@ -177,18 +176,18 @@ func (h *Handler) syncOneLocalSession(r *http.Request, a ctxAuth, access catalog
 	// catalog. Accept them as a no-op success so the client clears its queue.
 	if sess.EpisodeID != nil && *sess.EpisodeID != "" {
 		res.Success = true
-		return res
+		return res, false
 	}
 	if sess.LibraryItemID == "" {
 		res.Error = "Media item not found"
-		return res
+		return res, false
 	}
 
 	// Ownership / existence / access gate — the item must be visible to the
 	// caller. Mirrors handleSessionSync's access check.
 	if h.deps.MediaStore == nil {
 		res.Error = "Media item not found"
-		return res
+		return res, false
 	}
 	item, err := h.deps.MediaStore.GetAudiobookByID(ctx, sess.LibraryItemID, access)
 	if err != nil || item == nil {
@@ -197,11 +196,11 @@ func (h *Handler) syncOneLocalSession(r *http.Request, a ctxAuth, access catalog
 				"library_item_id", sess.LibraryItemID, "error", err)
 		}
 		res.Error = "Media item not found"
-		return res
+		return res, false
 	}
 
 	res.Success = true
-	res.startedPlayback = h.trackReportedPlayback(r, a, access, sess)
+	started := h.trackReportedPlayback(r, a, access, sess)
 
 	// Persist the offline resume position into user_watch_progress.
 	//
@@ -249,5 +248,5 @@ func (h *Handler) syncOneLocalSession(r *http.Request, a ctxAuth, access catalog
 			})
 		}
 	}
-	return res
+	return res, started
 }

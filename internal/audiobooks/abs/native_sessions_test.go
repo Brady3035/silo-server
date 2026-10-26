@@ -164,6 +164,8 @@ func TestHandleSessionCloseFinishesNativePlaybackSession(t *testing.T) {
 		{name: "final sync", body: `{"currentTime":3700,"timeListened":30}`, wantPosition: 3700},
 		// The final sync is best effort; the session closes regardless.
 		{name: "unreadable body", body: `not json`, wantPosition: 100},
+		// A body without a position is no final sync, not a sync to 0.
+		{name: "no position", body: `{}`, wantPosition: 100},
 		// A repeated close applies no stale final sync.
 		{name: "already closed", body: `{"currentTime":3700,"timeListened":30}`, closed: true, wantPosition: 100},
 	} {

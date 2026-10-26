@@ -1028,9 +1028,10 @@ func (m *SessionManager) UpdateProgressListened(sessionID string, position, list
 }
 
 // UpdateProgressReported is UpdateProgressListened for a client that reports
-// its listening as a running total for the play: the session credits the
-// change since the previous report. A total that went down starts a new
-// count and credits nothing.
+// its listening as a running total for the play: the session credits how far
+// the total rose past the highest one seen, so a late or repeated report
+// credits nothing. A client that has not reported a total is measured from
+// its position instead, as UpdateProgress does.
 func (m *SessionManager) UpdateProgressReported(sessionID string, position, total float64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1039,8 +1040,17 @@ func (m *SessionManager) UpdateProgressReported(sessionID string, position, tota
 	if !ok {
 		return ErrSessionNotFound
 	}
+	if total <= 0 && s.ReportedListening <= 0 {
+		s.Position = position
+		s.IsPaused = false
+		s.StopReported = false
+		s.streamRevision++
+		m.touchSessionLocked(s)
+		s.Watch.Observe(position, false, s.UpdatedAt)
+		return nil
+	}
 	listened := max(total-s.ReportedListening, 0)
-	s.ReportedListening = total
+	s.ReportedListening = max(s.ReportedListening, total)
 	m.creditProgressLocked(s, position, listened)
 	return nil
 }

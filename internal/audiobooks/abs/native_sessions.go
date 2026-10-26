@@ -36,7 +36,6 @@ type PlaybackSessionManager interface {
 	// FinishSession ends the play and runs the manager's finish hooks, which
 	// write the admin playback history row.
 	FinishSession(ctx context.Context, sessionID string) error
-	GetSession(sessionID string) (*playback.Session, error)
 	// RegisterReconstructed adds a session under a caller-chosen ID, or
 	// returns the live one already under it.
 	RegisterReconstructed(s *playback.Session) *playback.Session
@@ -183,18 +182,19 @@ func (h *Handler) trackReportedPlayback(r *http.Request, a ctxAuth, access catal
 	if err != nil {
 		return false
 	}
-	ctx := r.Context()
 	id := uuid.NewSHA1(reportedPlaybackNamespace, []byte(a.UserID+"\x00"+a.ProfileID+"\x00"+sess.ID)).String()
-	_, err = h.deps.NativeSessions.GetSession(id)
-	started := err != nil
-	if started && !h.registerReportedPlayback(r, a, access, userID, id, sess, now) {
+	err = h.deps.NativeSessions.UpdateProgressReported(id, sess.CurrentTime, sess.TimeListening)
+	if !errors.Is(err, playback.ErrSessionNotFound) {
 		return false
 	}
-	if err := h.deps.NativeSessions.UpdateProgressReported(id, sess.CurrentTime, sess.TimeListening); err != nil && !errors.Is(err, playback.ErrSessionNotFound) {
-		slog.WarnContext(ctx, "abs local session sync: update native session progress failed", "component", "audiobooks",
+	if !h.registerReportedPlayback(r, a, access, userID, id, sess, now) {
+		return false
+	}
+	if err := h.deps.NativeSessions.UpdateProgressReported(id, sess.CurrentTime, sess.TimeListening); err != nil {
+		slog.WarnContext(r.Context(), "abs local session sync: update native session progress failed", "component", "audiobooks",
 			"session_id", id, "error", err)
 	}
-	return started
+	return true
 }
 
 // registerReportedPlayback starts the report-only native session for a
@@ -327,10 +327,9 @@ type absDeviceInfo struct {
 func absPlaybackClientInfo(r *http.Request, device absDeviceInfo) playback.ClientInfo {
 	client := absPlaybackClientInfoFromRequest(r)
 	if name := strings.TrimSpace(device.ClientName); name != "" {
-		client.Name = name
-		if version := strings.TrimSpace(device.ClientVersion); version != "" {
-			client.Version = version
-		}
+		// The headers may describe another client, so their version is not
+		// carried over to the one deviceInfo names.
+		client.Name, client.Version = name, strings.TrimSpace(device.ClientVersion)
 	}
 	return client
 }

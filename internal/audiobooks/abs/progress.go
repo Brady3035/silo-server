@@ -372,11 +372,11 @@ func (h *Handler) handleSessionSync(w http.ResponseWriter, r *http.Request) {
 // mirrored native playback session.
 func (h *Handler) applySessionSync(ctx context.Context, a ctxAuth, sess ABSPlaybackSession, p syncPayload) error {
 	// Accumulate listening time and update position in abs_playback_sessions.
-	if err := h.deps.PlaybackSessionStore.SyncPlaybackSession(
+	// A failure here is returned once the rest is written, so the resume
+	// position and the native session still get the listener's position.
+	sessionErr := h.deps.PlaybackSessionStore.SyncPlaybackSession(
 		ctx, sess.ID, p.CurrentTime, int(p.timeDelta()),
-	); err != nil {
-		return err
-	}
+	)
 
 	// Update position in user_watch_progress. Must NOT be a full upsert —
 	// see comment in handleSetItemProgress re: not overwriting is_finished.
@@ -404,7 +404,7 @@ func (h *Handler) applySessionSync(ctx context.Context, a ctxAuth, sess ABSPlayb
 		"currentTime":   p.CurrentTime,
 		"timeListening": p.timeDelta(),
 	})
-	return nil
+	return sessionErr
 }
 
 // handleSessionClose — POST /abs/api/session/{sid}/close
@@ -421,18 +421,7 @@ func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := chi.URLParam(r, "sid")
-	// The final sync is best effort: a body that cannot be read still
-	// closes the session, at its last synced position.
-	var final *syncPayload
-	if raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)); err == nil && len(bytes.TrimSpace(raw)) > 0 {
-		var p syncPayload
-		if err := json.Unmarshal(raw, &p); err == nil {
-			final = &p
-		} else {
-			slog.WarnContext(r.Context(), "abs session close: ignoring unreadable final sync", "component", "audiobooks",
-				"session_id", sid, "error", err)
-		}
-	}
+	final := readFinalSync(r, sid)
 	if h.deps.PlaybackSessionStore == nil {
 		// No store wired — accept close gracefully.
 		w.WriteHeader(http.StatusNoContent)
@@ -467,6 +456,30 @@ func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 		"libraryItemId": sess.ContentID,
 	})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// readFinalSync reads the final sync a close may carry. It is best effort: a
+// body that cannot be read, or one without a currentTime ({}, null), is no
+// final sync, and the session closes at its last synced position.
+func readFinalSync(r *http.Request, sid string) *syncPayload {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var p struct {
+		syncPayload
+		CurrentTime *float64 `json:"currentTime"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		slog.WarnContext(r.Context(), "abs session close: ignoring unreadable final sync", "component", "audiobooks",
+			"session_id", sid, "error", err)
+		return nil
+	}
+	if p.CurrentTime == nil {
+		return nil
+	}
+	p.syncPayload.CurrentTime = *p.CurrentTime
+	return &p.syncPayload
 }
 
 // audiobookVisible reports whether the caller can see the audiobook.
