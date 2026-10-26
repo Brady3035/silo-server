@@ -42,7 +42,13 @@ remain clears under each provider's existing fallback rules. Connection checks d
 not persist draft values. Credentialed Meilisearch checks follow redirects only
 within the same scheme, exact host and effective port; any other redirect fails the check with a
 message asking for the final address. Checks without a key retain the HTTP
-client's ordinary redirect behavior.
+client's ordinary redirect behavior. Because Meilisearch answers `/health`
+without a key, the check then lists one index, which needs the `indexes.get`
+action, and searches a nonexistent index under the configured index name,
+which needs the `search` action and an index scope covering Silo's indexes.
+A key Meilisearch refuses for either request, or a missing one on a secured
+instance, fails with a message asking for another key. The check does not
+prove the key can write documents.
 Provider failures return `success: false` with a generic message that excludes
 provider error bodies and credentials. Invalid kinds/configuration return `422`.
 
@@ -263,6 +269,19 @@ after 10 seconds, even for a URL that turns the socket timeouts off.
 - The connection is made before the settings transaction. If another write
   changes the stored Redis settings in the meantime, the write is refused the
   same way and can be sent again.
+
+### Lower-version transcoding
+
+`playback.prefer_lower_version_transcode` is a boolean setting, default
+`true`. It applies when `allow_4k_transcode` is `true` and a 4K title has a
+lower-resolution version. A quality at or below that version's resolution
+class, such as Auto under a bandwidth estimate, is transcoded from the lower
+version. Qualities above it, such as **4K Medium**, still transcode the 4K
+version. When `false`, every lower quality transcodes the 4K version. With
+`allow_4k_transcode` set to `false`, the lower version serves lower qualities
+whatever this setting says. Changes apply to new playback decisions. The
+Playback settings page shows this policy as **Prefer 1080p
+versions** while 4K transcoding is allowed.
 
 ### HEVC encoding
 

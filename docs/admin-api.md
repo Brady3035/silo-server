@@ -1497,7 +1497,10 @@ read the live log. Account and file identifiers are strings, instants are RFC 33
 `duration_seconds` is null when the media duration was never recorded. A deleted account
 lists with an empty `username`; an item no longer in the catalog lists with an empty
 `media_title` and `media_type`. The stored client address is not part of this projection,
-matching v1. A missing database returns 503; storage errors are masked as 500.
+matching v1. It is the viewer's last address on the playback session. Rows written by
+earlier server versions hold the address of the request that ended the attempt instead:
+the administrator's when an administrator stopped or terminated it, and none when it
+expired. A missing database returns 503; storage errors are masked as 500.
 
 Two v2-only additions have no v1 counterpart. `ended_after` (an RFC 3339 instant) keeps
 attempts that ended at or after it; an unparsable value is 422, and the cursor binds it
@@ -1532,7 +1535,8 @@ for source configuration and `/api/v2/admin/history-imports` for mappings, crede
 and runs. All operations require an acting administrator. Mutations enforce the
 demo restriction; reads do not.
 `GET /api/v2/admin/history-imports/capabilities` reports availability, guarded
-configuration, durable administrative runs, and the 200-mapping bulk limit.
+configuration, durable administrative runs, the 200-mapping bulk limit, and
+`played_lookback` with its `max_lookback_hours` bound.
 
 Read a source or mapping by ID before editing it. The response contains its canonical
 configuration and a strong `ETag`. Send that exact tag in `If-Match` on source,
@@ -1564,6 +1568,29 @@ locations when available, and counts for each outcome. A source with more than 2
 mappings is rejected before any run admission. Bulk work is partially successful;
 it is not an atomic transaction across mappings. Mutations are not automatically
 retryable after an uncertain response.
+
+Run and bulk start take an optional body. Without one, with an empty or
+whitespace-only body (whatever its `Content-Type`), or with `lookback_hours`
+omitted or `null`, a run imports the full history; any other body must be
+`application/json`. `{"lookback_hours": N}`, N a plain JSON integer (1 to 8760),
+imports only items last played in the N hours before the run was queued: the
+cutoff is fixed at admission and stored with the run, so a run that waits in the
+queue still reads its window, and a bulk start gives every run one cutoff.
+Resume positions and favorites are still read in full. A lookback never removes
+or un-marks anything: items outside the window are left as they are. Because
+favorites are read in full, an item un-favorited in Silo but still a favorite in
+Jellyfin is favorited again by every run, as a full import already does;
+scheduled lookback runs make that more noticeable. If Jellyfin does not return
+plays newest first, the run reads the full played history instead and records a
+warning saying so. A play during the read can move an unread item ahead of the
+pages already read; the run detects that, reads the window again once, and falls
+back to the full played history if the list moves again. Only Jellyfin sources support it; an Emby or Plex source
+answers 422 `validation_failed`, and a bulk start on one queues nothing. A
+completed lookback run does not update the mapping's `last_imported_at`, which
+records the last completed full import. Run responses carry the cutoff as
+`played_since`, absent for a full import. The intended pattern is one full
+import per mapping, then recurring lookback runs with a window comfortably wider
+than the interval between them.
 
 Cancellation records intent. A queued run can become cancelled immediately; a running
 worker acknowledges cancellation at its next boundary. Pending cancellation returns
@@ -3101,6 +3128,11 @@ library chains as on v1. Success is 201 with the installation. There is no repla
 and no database uniqueness, so the row is non-retryable: a lost response may follow a
 committed install and the client reconciles from the installation list.
 
+A manifest whose ID or version maps to an empty, `.` or `..` directory name (after the host
+replaces `/`, `\`, `:` and `@` with `_`) is an invalid package, as is a replacement package
+that names a different plugin ID than the installation. Both are refused as package errors
+(422) and nothing is installed.
+
 `PUT /api/v2/admin/plugins/installations/{id}` assigns `enabled` and/or `update_policy`
 (`auto`, `notify`, `off`, `manual`); an empty body is 422. Disabling stops the running plugin
 before the write; any enabled change rebuilds the event subscriber index. Repeating the
@@ -3147,8 +3179,10 @@ restart, an update or a configuration change clears that failure.
 `DELETE /api/v2/admin/plugins/installations/{id}` stops the plugin, deletes the row
 (configuration, bindings and archives cascade) and removes its files; on a failed row delete
 an enabled plugin is restarted. Row delete and file removal are not one transaction and a
-repeat finds no row, so a later 404 is not this caller's receipt; non-retryable. Success is
-204.
+repeat finds no row, so a later 404 is not this caller's receipt; non-retryable. A row
+admitted before the host refused IDs and versions that map to an empty, `.` or `..` directory
+name never loads: the installation list shows it without manifest fields, the user settings
+list omits it, and deleting it removes the row but leaves its files on disk. Success is 204.
 
 `POST /api/v2/admin/plugins/uploads` installs one uploaded archive from the multipart
 `archive` part, capped at 256 MiB; JSON on this operation is 415, a missing part 422 at
