@@ -24,6 +24,9 @@ type PlaybackSessionManager interface {
 	BeginTransport(sessionID string) error
 	EndTransport(sessionID string) error
 	SetProgressPersistenceDisabled(sessionID string, disabled bool) error
+	// SetTimelineDuration records the whole book's length, since ABS reports
+	// positions in the book rather than in the session's first file.
+	SetTimelineDuration(sessionID string, seconds float64) error
 	// FinishSession ends the play and runs the manager's finish hooks, which
 	// write the admin playback history row.
 	FinishSession(ctx context.Context, sessionID string) error
@@ -69,6 +72,17 @@ func (h *Handler) startNativePlaybackSession(
 			"session_id", session.ID, "error", err)
 	} else {
 		session.DisableProgressPersistence = true
+	}
+
+	var bookDuration float64
+	for _, f := range files {
+		bookDuration += float64(f.Duration)
+	}
+	if err := h.deps.NativeSessions.SetTimelineDuration(session.ID, bookDuration); err != nil {
+		slog.WarnContext(r.Context(), "abs play: set native session book duration failed", "component", "audiobooks",
+			"session_id", session.ID, "error", err)
+	} else {
+		session.TimelineDuration = bookDuration
 	}
 
 	if startPosition > 0 {

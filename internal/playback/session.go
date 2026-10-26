@@ -102,6 +102,11 @@ type Session struct {
 	// Watch measures how much of the session was actually watched; Position
 	// is only where the player is now. See WatchTime.
 	Watch WatchTime
+	// TimelineDuration is the length in seconds of the timeline Position is
+	// measured on when that is more than the session's file, such as a whole
+	// Audiobookshelf book of several files. Zero means the file's own
+	// duration.
+	TimelineDuration float64
 	// StopReported marks a session a client reported stopped without an ID
 	// that could end it (#1454). It only hides the session from the live
 	// admin view: pause state and idle grace are untouched, so a stale stop
@@ -1596,6 +1601,22 @@ func (m *SessionManager) SetProgressPersistenceDisabled(sessionID string, disabl
 
 	s.DisableProgressPersistence = disabled
 	m.touchSessionLocked(s)
+	return nil
+}
+
+// SetTimelineDuration records the length of the timeline the session's
+// Position is measured on, for a player whose position spans more than the
+// session's file. See Session.TimelineDuration.
+func (m *SessionManager) SetTimelineDuration(sessionID string, seconds float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+
+	s.TimelineDuration = seconds
 	return nil
 }
 

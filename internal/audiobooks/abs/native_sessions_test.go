@@ -60,6 +60,14 @@ func TestHandlePlayStartCreatesNativePlaybackSession(t *testing.T) {
 			Duration:   3600,
 			Bitrate:    128,
 			CodecAudio: "mp3",
+		}, {
+			ID:         43,
+			ContentID:  "book-1",
+			FilePath:   "/tmp/book-2.mp3",
+			FileSize:   512,
+			Duration:   1800,
+			Bitrate:    128,
+			CodecAudio: "mp3",
 		}},
 	}
 	absSessions := &fakePlaybackSessionStore{}
@@ -115,6 +123,11 @@ func TestHandlePlayStartCreatesNativePlaybackSession(t *testing.T) {
 	if native.Position != 123.5 {
 		t.Fatalf("native position = %v, want 123.5", native.Position)
 	}
+	// ABS positions are in the whole book, so the session measures them
+	// against every file, not the first one it was started on.
+	if native.TimelineDuration != 5400 {
+		t.Fatalf("native timeline duration = %v, want 5400", native.TimelineDuration)
+	}
 	if syncer.calls == 0 {
 		t.Fatalf("native session syncer was not called")
 	}
@@ -126,8 +139,8 @@ func TestHandlePlayStartCreatesNativePlaybackSession(t *testing.T) {
 		t.Fatalf("ABS session position = %v, want 123.5", absSession.CurrentPositionSeconds)
 	}
 	tracks, _ := body["audioTracks"].([]any)
-	if len(tracks) != 1 {
-		t.Fatalf("audioTracks length = %d, want 1", len(tracks))
+	if len(tracks) != 2 {
+		t.Fatalf("audioTracks length = %d, want 2", len(tracks))
 	}
 	track, _ := tracks[0].(map[string]any)
 	if got, _ := track["contentUrl"].(string); got == "" || !strings.Contains(got, "/abs/public/session/"+sessionID+"/track/1") {
