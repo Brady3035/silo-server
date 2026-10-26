@@ -9,7 +9,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/Silo-Server/silo-server/internal/catalog"
 	"github.com/Silo-Server/silo-server/internal/clientip"
 	"github.com/Silo-Server/silo-server/internal/models"
 	"github.com/Silo-Server/silo-server/internal/playback"
@@ -30,7 +34,26 @@ type PlaybackSessionManager interface {
 	// FinishSession ends the play and runs the manager's finish hooks, which
 	// write the admin playback history row.
 	FinishSession(ctx context.Context, sessionID string) error
+	GetSession(sessionID string) (*playback.Session, error)
+	// RegisterReconstructed adds a session under a caller-chosen ID, or
+	// returns the live one already under it.
+	RegisterReconstructed(s *playback.Session) *playback.Session
 }
+
+const (
+	// reportedPlaybackGrace is how long after its last report a play that a
+	// client only reports through /session/local is over. Such clients send
+	// no stop, so silence is the only end there is.
+	reportedPlaybackGrace = 90 * time.Second
+	// liveReportWindow separates live playback from catch-up: a session last
+	// updated longer ago than this is offline listening synced late, or a
+	// client re-sending an old session, not a play happening now.
+	liveReportWindow = 2 * time.Minute
+)
+
+// reportedPlaybackNamespace derives the native session ID of a play a client
+// reports through /session/local from the client's own session ID.
+var reportedPlaybackNamespace = uuid.MustParse("3f6c1a2e-8b4d-4e7a-9c15-6d2f0b8e7a41")
 
 // PlaybackSessionSyncer flushes the local native-session snapshot into the
 // shared admin live-session table.
@@ -133,6 +156,77 @@ func (h *Handler) updateNativePlaybackProgress(ctx context.Context, sessionID st
 		return
 	}
 	h.syncNativeSessionsNow(ctx, "abs_progress")
+}
+
+// trackReportedPlayback mirrors live playback that a client reports only
+// through /session/local or /session/local-all into a native playback
+// session, as handlePlayStart does for a client that opens a session. Some
+// clients (Plappa and Prologue on iOS) never call /play: they stream the files
+// directly and post their local session every few seconds while playing.
+//
+// The native session ID is derived from the account, profile and client
+// session ID, so every report of one play, on any replica and after an idle
+// expiry, lands on the same session and the same admin history row. A report
+// never fails because of this: the client is playing whether or not Silo
+// shows it.
+func (h *Handler) trackReportedPlayback(r *http.Request, a ctxAuth, access catalog.AccessFilter, sess localPlaybackSession) {
+	if h == nil || h.deps.NativeSessions == nil || sess.ID == "" || !sess.isLive(time.Now()) {
+		return
+	}
+	userID, err := strconv.Atoi(a.UserID)
+	if err != nil {
+		return
+	}
+	ctx := r.Context()
+	id := uuid.NewSHA1(reportedPlaybackNamespace, []byte(a.UserID+"\x00"+a.ProfileID+"\x00"+sess.ID)).String()
+	if _, err := h.deps.NativeSessions.GetSession(id); err == nil {
+		if err := h.deps.NativeSessions.UpdateProgress(id, sess.CurrentTime, false); err != nil && !errors.Is(err, playback.ErrSessionNotFound) {
+			slog.WarnContext(ctx, "abs local session sync: update native session progress failed", "component", "audiobooks",
+				"session_id", id, "error", err)
+		}
+		return
+	}
+
+	files, err := h.deps.MediaStore.GetMediaFiles(ctx, sess.LibraryItemID, access)
+	if err != nil || len(files) == 0 {
+		if err != nil {
+			slog.WarnContext(ctx, "abs local session sync: load files for native session failed", "component", "audiobooks",
+				"library_item_id", sess.LibraryItemID, "error", err)
+		}
+		return
+	}
+	var bookDuration float64
+	for _, f := range files {
+		bookDuration += float64(f.Duration)
+	}
+	client := absPlaybackClientInfoFromRequest(r)
+	if name := strings.TrimSpace(sess.DeviceInfo.ClientName); name != "" {
+		client.Name, client.Version = name, sess.DeviceInfo.ClientVersion
+	}
+	client = client.Normalized()
+	file := files[0]
+	h.deps.NativeSessions.RegisterReconstructed(&playback.Session{
+		ID:                         id,
+		UserID:                     userID,
+		ProfileID:                  a.ProfileID,
+		MediaFileID:                file.ID,
+		RequestedMediaFileID:       file.ID,
+		PlayMethod:                 playback.PlayDirect,
+		BasePlayMethod:             playback.PlayDirect,
+		ClientIP:                   requestClientIP(r),
+		ClientName:                 client.Name,
+		ClientVersion:              client.Version,
+		ClientUserAgent:            client.UserAgent,
+		StreamBitrateKbps:          max(file.Bitrate, 0),
+		DisableProgressPersistence: true,
+		TimelineDuration:           bookDuration,
+		IdleGrace:                  reportedPlaybackGrace,
+	})
+	if err := h.deps.NativeSessions.UpdateProgress(id, sess.CurrentTime, false); err != nil {
+		slog.WarnContext(ctx, "abs local session sync: seed native session progress failed", "component", "audiobooks",
+			"session_id", id, "error", err)
+	}
+	h.syncNativeSessionsNow(ctx, "abs_local_start")
 }
 
 func (h *Handler) stopNativePlaybackSession(ctx context.Context, sessionID string) {

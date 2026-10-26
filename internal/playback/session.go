@@ -107,6 +107,11 @@ type Session struct {
 	// Audiobookshelf book of several files. Zero means the file's own
 	// duration.
 	TimelineDuration float64
+	// IdleGrace, when set, replaces the manager's active and paused grace
+	// windows for this session. It is for a player whose progress reports
+	// are the only sign of playback, which sends no stop: the play is over
+	// once this long passes without one.
+	IdleGrace time.Duration
 	// StopReported marks a session a client reported stopped without an ID
 	// that could end it (#1454). It only hides the session from the live
 	// admin view: pause state and idle grace are untouched, so a stale stop
@@ -1969,7 +1974,7 @@ func (m *SessionManager) CleanInactive(activeIdle, pausedIdle time.Duration) []*
 		if s.activeTransportCount > 0 {
 			continue
 		}
-		activeIdle, pausedIdle := remoteTransportGrace(s, activeIdle, pausedIdle)
+		activeIdle, pausedIdle := sessionGrace(s, activeIdle, pausedIdle)
 		if m.sessionIsInactiveLocked(s, now, activeIdle, pausedIdle) {
 			cp := *s
 			expired = append(expired, &cp)
@@ -2006,8 +2011,17 @@ func (m *SessionManager) countsTowardLimitsLocked(s *Session, now time.Time) boo
 	if s.activeTransportCount > 0 {
 		return true
 	}
-	activeGrace, pausedGrace := remoteTransportGrace(s, m.activeGrace, m.pausedGrace)
+	activeGrace, pausedGrace := sessionGrace(s, m.activeGrace, m.pausedGrace)
 	return !m.sessionIsInactiveLocked(s, now, activeGrace, pausedGrace)
+}
+
+// sessionGrace returns the idle windows that apply to s: its own IdleGrace
+// when set, widened like any other for a remotely served session.
+func sessionGrace(s *Session, activeIdle, pausedIdle time.Duration) (time.Duration, time.Duration) {
+	if s != nil && s.IdleGrace > 0 {
+		activeIdle, pausedIdle = s.IdleGrace, s.IdleGrace
+	}
+	return remoteTransportGrace(s, activeIdle, pausedIdle)
 }
 
 // remoteTransportGrace widens the idle windows for a session whose bytes are

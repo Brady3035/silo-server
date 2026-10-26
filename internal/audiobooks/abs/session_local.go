@@ -1,7 +1,6 @@
 package abs
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -52,6 +51,23 @@ type localPlaybackSession struct {
 	CurrentTime   float64 `json:"currentTime"`
 	TimeListening float64 `json:"timeListening"`
 	DisplayTitle  string  `json:"displayTitle"`
+	// UpdatedAt is when the client last updated the session, in Unix
+	// milliseconds. Some clients send a fraction.
+	UpdatedAt  float64 `json:"updatedAt"`
+	DeviceInfo struct {
+		ClientName    string `json:"clientName"`
+		ClientVersion string `json:"clientVersion"`
+	} `json:"deviceInfo"`
+}
+
+// isLive reports whether the session was updated recently enough to be
+// playback happening now rather than a late sync. See liveReportWindow.
+func (s localPlaybackSession) isLive(now time.Time) bool {
+	if s.UpdatedAt <= 0 {
+		return false
+	}
+	age := now.Sub(time.UnixMilli(int64(s.UpdatedAt)))
+	return age.Abs() <= liveReportWindow
 }
 
 // localSyncResult mirrors the per-session object ABS returns from
@@ -82,7 +98,7 @@ func (h *Handler) handleSyncLocalSession(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "resolve access: "+err.Error(), http.StatusForbidden)
 		return
 	}
-	res := h.syncOneLocalSession(r.Context(), a, access, sess)
+	res := h.syncOneLocalSession(r, a, access, sess)
 	if !res.Success {
 		// Real ABS: res.status(500).send(result.error).
 		http.Error(w, res.Error, http.StatusInternalServerError)
@@ -124,15 +140,17 @@ func (h *Handler) handleSyncLocalSessions(w http.ResponseWriter, r *http.Request
 			results = append(results, localSyncResult{Success: false, Error: "invalid session"})
 			continue
 		}
-		results = append(results, h.syncOneLocalSession(r.Context(), a, access, sess))
+		results = append(results, h.syncOneLocalSession(r, a, access, sess))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"results": results})
 }
 
-// syncOneLocalSession applies one offline session's position to the caller's
-// media progress and returns the ABS-shaped per-session result. It never
-// panics and never propagates an error to fail a batch.
-func (h *Handler) syncOneLocalSession(ctx context.Context, a ctxAuth, access catalog.AccessFilter, sess localPlaybackSession) localSyncResult {
+// syncOneLocalSession applies one local session's position to the caller's
+// media progress, mirrors it into a native playback session while it is live
+// (see trackReportedPlayback), and returns the ABS-shaped per-session result.
+// It never panics and never propagates an error to fail a batch.
+func (h *Handler) syncOneLocalSession(r *http.Request, a ctxAuth, access catalog.AccessFilter, sess localPlaybackSession) localSyncResult {
+	ctx := r.Context()
 	res := localSyncResult{ID: sess.ID}
 
 	// Podcast episode sessions are out of scope for silo's audiobook-only
@@ -163,6 +181,7 @@ func (h *Handler) syncOneLocalSession(ctx context.Context, a ctxAuth, access cat
 	}
 
 	res.Success = true
+	h.trackReportedPlayback(r, a, access, sess)
 
 	// Persist the offline resume position into user_watch_progress.
 	//
