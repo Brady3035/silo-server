@@ -1,8 +1,10 @@
 package abs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -358,46 +360,60 @@ func (h *Handler) handleSessionSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Accumulate listening time and update position in abs_playback_sessions.
-	if err := h.deps.PlaybackSessionStore.SyncPlaybackSession(
-		r.Context(), sid, p.CurrentTime, int(p.timeDelta()),
-	); err != nil {
+	if err := h.applySessionSync(r.Context(), a, sess, p); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// applySessionSync records one sync of an open session: listening time and
+// position on the session row, the resume position, and the position of the
+// mirrored native playback session.
+func (h *Handler) applySessionSync(ctx context.Context, a ctxAuth, sess ABSPlaybackSession, p syncPayload) error {
+	// Accumulate listening time and update position in abs_playback_sessions.
+	if err := h.deps.PlaybackSessionStore.SyncPlaybackSession(
+		ctx, sess.ID, p.CurrentTime, int(p.timeDelta()),
+	); err != nil {
+		return err
 	}
 
 	// Update position in user_watch_progress. Must NOT be a full upsert —
 	// see comment in handleSetItemProgress re: not overwriting is_finished.
 	if h.deps.ProgressStore != nil {
 		if err := h.deps.ProgressStore.UpdateProgressPosition(
-			r.Context(), a.UserID, a.ProfileID, sess.ContentID, p.CurrentTime,
+			ctx, a.UserID, a.ProfileID, sess.ContentID, p.CurrentTime,
 		); err != nil {
-			slog.WarnContext(r.Context(), "abs session sync: update progress position failed", "component", "audiobooks",
-				"session_id", sid, "content_id", sess.ContentID, "error", err)
+			slog.WarnContext(ctx, "abs session sync: update progress position failed", "component", "audiobooks",
+				"session_id", sess.ID, "content_id", sess.ContentID, "error", err)
 		}
 	}
-	h.updateNativePlaybackProgress(r.Context(), sid, p.CurrentTime)
+	h.updateNativePlaybackProgress(ctx, sess.ID, p.CurrentTime)
 
 	// Realtime push to other connected clients.
 	h.publish(a.UserID, "user_item_progress_updated", map[string]any{
 		"data": map[string]any{
 			"libraryItemId": sess.ContentID,
 			"currentTime":   p.CurrentTime,
-			"sessionId":     sid,
+			"sessionId":     sess.ID,
 		},
 	})
 	h.publish(a.UserID, "user_session_updated", map[string]any{
-		"id":            sid,
+		"id":            sess.ID,
 		"libraryItemId": sess.ContentID,
 		"currentTime":   p.CurrentTime,
 		"timeListening": p.timeDelta(),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	return nil
 }
 
 // handleSessionClose — POST /abs/api/session/{sid}/close
 // Finalises a play session. Sets closed_at on the abs_playback_sessions row.
 // Only the owning user may close their session (IDOR guard).
+//
+// A body is the client's final sync, as in ABS SessionController.close: it is
+// applied like a PATCH /session/{sid} before the session closes, so playback
+// since the last periodic sync is kept. An empty body closes without a sync.
 func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 	a, ok := absAuthFrom(r)
 	if !ok {
@@ -405,6 +421,20 @@ func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := chi.URLParam(r, "sid")
+	var final *syncPayload
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if len(bytes.TrimSpace(raw)) > 0 {
+		var p syncPayload
+		if err := json.Unmarshal(raw, &p); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		final = &p
+	}
 	if h.deps.PlaybackSessionStore == nil {
 		// No store wired — accept close gracefully.
 		w.WriteHeader(http.StatusNoContent)
@@ -416,6 +446,20 @@ func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 	if err != nil || !sameABSPrincipal(a, sess.UserID, sess.ProfileID) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
+	}
+
+	if final != nil {
+		// The final sync needs the same item access a periodic one does.
+		// Without it the session still closes, at its last synced position.
+		access, err := h.accessFilterForAuth(r.Context(), a)
+		if err == nil {
+			if item, _ := h.deps.MediaStore.GetAudiobookByID(r.Context(), sess.ContentID, access); item != nil {
+				if err := h.applySessionSync(r.Context(), a, sess, *final); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+		}
 	}
 
 	if err := h.deps.PlaybackSessionStore.ClosePlaybackSession(r.Context(), sid); err != nil {

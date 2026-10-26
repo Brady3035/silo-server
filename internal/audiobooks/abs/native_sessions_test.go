@@ -149,50 +149,73 @@ func TestHandlePlayStartCreatesNativePlaybackSession(t *testing.T) {
 }
 
 func TestHandleSessionCloseFinishesNativePlaybackSession(t *testing.T) {
-	absSessions := &fakePlaybackSessionStore{}
-	nativeSessions := playback.NewSessionManager(0, 0)
-	var finished []string
-	nativeSessions.AddFinishHook(func(_ context.Context, s *playback.Session) {
-		finished = append(finished, s.ID)
-	})
-	native, err := nativeSessions.StartSessionWithFilesContext(context.Background(), 1, "profile-1", 42, 42, playback.PlayDirect, false)
-	if err != nil {
-		t.Fatalf("start native session: %v", err)
-	}
-	_ = absSessions.InsertPlaybackSession(context.Background(), ABSPlaybackSession{
-		ID:        native.ID,
-		UserID:    "1",
-		ProfileID: "profile-1",
-		ContentID: "book-1",
-	})
-	syncer := &recordingPlaybackSessionSyncer{}
-	h := New(Dependencies{
-		MediaStore:           noopMediaStore{},
-		PlaybackSessionStore: absSessions,
-		NativeSessions:       nativeSessions,
-		NativeSessionSyncer:  syncer,
-	})
+	for _, tc := range []struct {
+		name         string
+		body         string
+		wantPosition float64
+	}{
+		{name: "empty body", wantPosition: 100},
+		// A close body is the client's final sync (#3099): the play is
+		// recorded where the listener stopped, not at the last sync.
+		{name: "final sync", body: `{"currentTime":3700,"timeListened":30}`, wantPosition: 3700},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			absSessions := &fakePlaybackSessionStore{}
+			nativeSessions := playback.NewSessionManager(0, 0)
+			var finished []playback.Session
+			nativeSessions.AddFinishHook(func(_ context.Context, s *playback.Session) {
+				finished = append(finished, *s)
+			})
+			native, err := nativeSessions.StartSessionWithFilesContext(context.Background(), 1, "profile-1", 42, 42, playback.PlayDirect, false)
+			if err != nil {
+				t.Fatalf("start native session: %v", err)
+			}
+			if err := nativeSessions.UpdateProgress(native.ID, 100, false); err != nil {
+				t.Fatalf("seed native position: %v", err)
+			}
+			_ = absSessions.InsertPlaybackSession(context.Background(), ABSPlaybackSession{
+				ID:        native.ID,
+				UserID:    "1",
+				ProfileID: "profile-1",
+				ContentID: "book-1",
+			})
+			syncer := &recordingPlaybackSessionSyncer{}
+			h := New(Dependencies{
+				MediaStore:           &playStartMediaStore{item: &models.MediaItem{ContentID: "book-1", Type: "audiobook"}},
+				PlaybackSessionStore: absSessions,
+				NativeSessions:       nativeSessions,
+				NativeSessionSyncer:  syncer,
+			})
 
-	rec := dispatchABSWithParams(
-		http.MethodPost,
-		"/api/session/"+native.ID+"/close",
-		map[string]string{"sid": native.ID},
-		nil,
-		"1",
-		"profile-1",
-		h.handleSessionClose,
-	)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
-	}
-	if _, err := nativeSessions.GetSession(native.ID); err == nil {
-		t.Fatalf("native session still exists after close")
-	}
-	// The finish hook is what records the play in admin playback history.
-	if len(finished) != 1 || finished[0] != native.ID {
-		t.Fatalf("finish hooks ran for %v, want [%s]", finished, native.ID)
-	}
-	if syncer.calls == 0 {
-		t.Fatalf("native session syncer was not called")
+			var body []byte
+			if tc.body != "" {
+				body = []byte(tc.body)
+			}
+			rec := dispatchABSWithParams(
+				http.MethodPost,
+				"/api/session/"+native.ID+"/close",
+				map[string]string{"sid": native.ID},
+				body,
+				"1",
+				"profile-1",
+				h.handleSessionClose,
+			)
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
+			}
+			if _, err := nativeSessions.GetSession(native.ID); err == nil {
+				t.Fatalf("native session still exists after close")
+			}
+			// The finish hook is what records the play in admin playback history.
+			if len(finished) != 1 || finished[0].ID != native.ID {
+				t.Fatalf("finish hooks ran %d times, want once for %s", len(finished), native.ID)
+			}
+			if finished[0].Position != tc.wantPosition {
+				t.Fatalf("finished position = %v, want %v", finished[0].Position, tc.wantPosition)
+			}
+			if syncer.calls == 0 {
+				t.Fatalf("native session syncer was not called")
+			}
+		})
 	}
 }
