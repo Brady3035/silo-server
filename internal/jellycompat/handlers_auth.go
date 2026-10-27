@@ -20,6 +20,10 @@ import (
 	"github.com/Silo-Server/silo-server/internal/userstore"
 )
 
+// compatSyncPlayAccessNone is Jellyfin's SyncPlayUserAccessType for a user
+// who may not use SyncPlay.
+const compatSyncPlayAccessNone = "None"
+
 type authenticateByNameRequest struct {
 	Username string `json:"Username"`
 	Pw       string `json:"Pw"`
@@ -412,7 +416,7 @@ func (h *AuthHandler) userDTO(session *Session) userDTOResponse {
 			RemoteClientBitrateLimit:         0,
 			AuthenticationProviderID:         "silo-local",
 			PasswordResetProviderID:          "silo-local",
-			SyncPlayAccess:                   "None", //nolint:goconst // Jellyfin SyncPlayUserAccessType, not a subtitle mode
+			SyncPlayAccess:                   compatSyncPlayAccessNone,
 			BlockedTags:                      []string{},
 			AllowedTags:                      []string{},
 			AccessSchedules:                  []struct{}{},
@@ -444,9 +448,9 @@ func (h *AuthHandler) userDTO(session *Session) userDTOResponse {
 
 // sessionInfo describes the signing-in device from its MediaBrowser
 // authorization header. Id is stable per user and device, as Jellyfin keeps
-// one session per device; a sign-in that names no device gets a random Id so
-// it never shares one with another device's sign-in. Id never derives from
-// the access token.
+// one session per device. A sign-in that names no device gets an Id from its
+// login session, so a Quick Connect retry that returns the same session keeps
+// its Id and no two sign-ins share one. Id never derives from the access token.
 func (h *AuthHandler) sessionInfo(r *http.Request, session *Session) *sessionInfoResponse {
 	name := session.ProfileName
 	if name == "" {
@@ -454,9 +458,14 @@ func (h *AuthHandler) sessionInfo(r *http.Request, session *Session) *sessionInf
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	deviceID := authorizationValue(r, "DeviceId")
-	sessionID := uuid.New()
-	if deviceID != "" {
+	var sessionID uuid.UUID
+	switch {
+	case deviceID != "":
 		sessionID = uuid.NewSHA1(session.PseudoUserID, []byte(deviceID))
+	case session.LoginSessionID != "":
+		sessionID = uuid.NewSHA1(session.PseudoUserID, []byte("login-session\x00"+session.LoginSessionID))
+	default:
+		sessionID = uuid.New()
 	}
 
 	return &sessionInfoResponse{

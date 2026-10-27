@@ -98,13 +98,12 @@ func TestHandleAuthenticateByNameSendsJellyfinRequiredFields(t *testing.T) {
 			t.Errorf("SessionInfo.%s = %s, want %s", key, got, want)
 		}
 	}
-	if strings.Contains(string(out.SessionInfo["Id"]), "tok") {
-		t.Errorf("SessionInfo.Id derives from the access token: %s", out.SessionInfo["Id"])
-	}
 
-	// The Id is stable for one device, and two sign-ins that name no device
-	// never share one.
-	sessionID := func(authorization string) string {
+	// The Id is stable for one device across sign-ins. Without a DeviceId it
+	// follows the login session: a retry that returns the same session keeps
+	// it, and two sign-ins never share one.
+	sessionID := func(loginSessionID, authorization string) string {
+		session.LoginSessionID = loginSessionID
 		req := httptest.NewRequest(http.MethodPost, "/Users/AuthenticateByName", strings.NewReader(`{"Username":"alice","Pw":"secret"}`))
 		req.Header.Set("Authorization", authorization)
 		rec := httptest.NewRecorder()
@@ -119,11 +118,14 @@ func TestHandleAuthenticateByNameSendsJellyfinRequiredFields(t *testing.T) {
 		}
 		return out.SessionInfo.ID
 	}
-	device := `MediaBrowser Client="Lenna", DeviceId="dev-1"`
-	if a, b := sessionID(device), sessionID(device); a != b {
+	device, noDevice := `MediaBrowser Client="Lenna", DeviceId="dev-1"`, `MediaBrowser Client="Lenna"`
+	if a, b := sessionID("login-1", device), sessionID("login-2", device); a != b {
 		t.Errorf("same device got Ids %s and %s", a, b)
 	}
-	if a, b := sessionID(`MediaBrowser Client="Lenna"`), sessionID(`MediaBrowser Client="Lenna"`); a == b {
+	if a, b := sessionID("login-1", noDevice), sessionID("login-1", noDevice); a != b {
+		t.Errorf("one login session without a DeviceId got Ids %s and %s", a, b)
+	}
+	if a, b := sessionID("login-1", noDevice), sessionID("login-2", noDevice); a == b {
 		t.Errorf("two sign-ins without a DeviceId share Id %s", a)
 	}
 }
