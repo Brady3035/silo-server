@@ -1,6 +1,8 @@
 package jellycompat
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -48,5 +50,55 @@ func TestHandleAuthenticateByNameThrottledName(t *testing.T) {
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "60" || !strings.Contains(rec.Body.String(), "TooManyRequests") {
 		t.Fatalf("locked name: status = %d, Retry-After = %q, body %s; want 429, 60, TooManyRequests",
 			rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
+	}
+}
+
+type fixedLoginResolver struct{ session *Session }
+
+func (f fixedLoginResolver) Resolve(context.Context, string, string, string, string) (*Session, error) {
+	return f.session, nil
+}
+
+// Strict decoders such as Lenna's reject the whole sign-in response when a key
+// Jellyfin always sends is missing, so each must be present and the session
+// must describe the device from the MediaBrowser header.
+func TestHandleAuthenticateByNameSendsJellyfinRequiredFields(t *testing.T) {
+	session := &Session{Token: "tok", Username: "alice", PseudoUserID: PseudoUserID(7, "kids")}
+	h := NewAuthHandler(func() *config.Config { return &config.Config{} }, fixedLoginResolver{session}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/Users/AuthenticateByName", strings.NewReader(`{"Username":"alice","Pw":"secret"}`))
+	req.Header.Set("Authorization", `MediaBrowser Client="Lenna", Device="My%20iPhone", DeviceId="dev-1", Version="1.0.17"`)
+	rec := httptest.NewRecorder()
+
+	h.HandleAuthenticateByName(rec, req)
+
+	var out struct {
+		User        map[string]json.RawMessage
+		SessionInfo map[string]json.RawMessage
+	}
+	var policy map[string]json.RawMessage
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil || json.Unmarshal(out.User["Policy"], &policy) != nil {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	for name, keys := range map[string]struct {
+		got  map[string]json.RawMessage
+		want []string
+	}{
+		"User":        {out.User, []string{"Id", "Name", "ServerId", "EnableAutoLogin", "LastLoginDate", "LastActivityDate", "Policy", "Configuration"}},
+		"User.Policy": {policy, []string{"BlockedTags", "AllowedTags", "AccessSchedules", "BlockUnratedItems", "EnableContentDeletionFromFolders", "EnabledDevices", "EnabledChannels", "EnabledFolders", "BlockedMediaFolders", "BlockedChannels"}},
+		"SessionInfo": {out.SessionInfo, []string{"Id", "UserId", "Client", "DeviceId", "DeviceName", "ApplicationVersion", "RemoteEndPoint", "PlayState", "Capabilities", "AdditionalUsers", "NowPlayingQueue", "SupportedCommands", "PlayableMediaTypes"}},
+	} {
+		for _, key := range keys.want {
+			if v, ok := keys.got[key]; !ok || string(v) == "null" {
+				t.Errorf("%s.%s missing or null; body %s", name, key, rec.Body.String())
+			}
+		}
+	}
+	for key, want := range map[string]string{"Client": `"Lenna"`, "DeviceName": `"My iPhone"`, "DeviceId": `"dev-1"`, "ApplicationVersion": `"1.0.17"`} {
+		if got := string(out.SessionInfo[key]); got != want {
+			t.Errorf("SessionInfo.%s = %s, want %s", key, got, want)
+		}
+	}
+	if strings.Contains(string(out.SessionInfo["Id"]), "tok") {
+		t.Errorf("SessionInfo.Id derives from the access token: %s", out.SessionInfo["Id"])
 	}
 }
