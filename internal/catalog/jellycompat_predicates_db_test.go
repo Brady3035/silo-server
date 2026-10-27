@@ -341,6 +341,21 @@ func TestJellycompatPredicatesPostgres(t *testing.T) {
 			t.Fatalf("filtered total=%d items=%d, want the four 2024 episodes other than e0", total, len(items))
 		}
 
+		// An undated episode stays last in a descending year or date sort.
+		exec(`UPDATE episodes SET air_date=NULL WHERE content_id=$1`, episodeIDs[0])
+		defer exec(`UPDATE episodes SET air_date=$2 WHERE content_id=$1`, episodeIDs[0], time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+		for _, sort := range []string{BrowseSortYear, BrowseSortReleaseDate} {
+			dated := all
+			dated.Sort, dated.Order = sort, BrowseOrderDescending
+			items, _, err = episodes.BrowseEpisodes(ctx, "", "", nil, "", dated, access, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(items) != 6 || items[5].ContentID != episodeIDs[0] {
+				t.Fatalf("%s descending = %v, want the undated e0 last", sort, items)
+			}
+		}
+
 		otherLibrary := all
 		otherLibrary.LibraryID = disabledID
 		if _, total, err = episodes.BrowseEpisodes(ctx, "", "", nil, "", otherLibrary, access, true); err != nil || total != 0 {
