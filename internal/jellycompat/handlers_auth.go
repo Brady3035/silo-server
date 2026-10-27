@@ -444,7 +444,9 @@ func (h *AuthHandler) userDTO(session *Session) userDTOResponse {
 
 // sessionInfo describes the signing-in device from its MediaBrowser
 // authorization header. Id is stable per user and device, as Jellyfin keeps
-// one session per device, and never derives from the access token.
+// one session per device; a sign-in that names no device gets a random Id so
+// it never shares one with another device's sign-in. Id never derives from
+// the access token.
 func (h *AuthHandler) sessionInfo(r *http.Request, session *Session) *sessionInfoResponse {
 	name := session.ProfileName
 	if name == "" {
@@ -452,6 +454,10 @@ func (h *AuthHandler) sessionInfo(r *http.Request, session *Session) *sessionInf
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	deviceID := authorizationValue(r, "DeviceId")
+	sessionID := uuid.New()
+	if deviceID != "" {
+		sessionID = uuid.NewSHA1(session.PseudoUserID, []byte(deviceID))
+	}
 
 	return &sessionInfoResponse{
 		PlayState:       sessionPlayStateDTO{RepeatMode: compatRepeatNone, PlaybackOrder: compatPlaybackOrderDefault},
@@ -462,7 +468,7 @@ func (h *AuthHandler) sessionInfo(r *http.Request, session *Session) *sessionInf
 		},
 		RemoteEndPoint:        clientip.FromContext(r.Context()),
 		PlayableMediaTypes:    []string{},
-		ID:                    strings.ReplaceAll(uuid.NewSHA1(session.PseudoUserID, []byte(deviceID)).String(), "-", ""),
+		ID:                    strings.ReplaceAll(sessionID.String(), "-", ""),
 		UserID:                session.PseudoUserID.String(),
 		UserName:              name,
 		Client:                authorizationValue(r, "Client"),

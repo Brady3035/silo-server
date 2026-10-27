@@ -101,4 +101,29 @@ func TestHandleAuthenticateByNameSendsJellyfinRequiredFields(t *testing.T) {
 	if strings.Contains(string(out.SessionInfo["Id"]), "tok") {
 		t.Errorf("SessionInfo.Id derives from the access token: %s", out.SessionInfo["Id"])
 	}
+
+	// The Id is stable for one device, and two sign-ins that name no device
+	// never share one.
+	sessionID := func(authorization string) string {
+		req := httptest.NewRequest(http.MethodPost, "/Users/AuthenticateByName", strings.NewReader(`{"Username":"alice","Pw":"secret"}`))
+		req.Header.Set("Authorization", authorization)
+		rec := httptest.NewRecorder()
+		h.HandleAuthenticateByName(rec, req)
+		var out struct {
+			SessionInfo struct {
+				ID string `json:"Id"`
+			}
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.SessionInfo.ID == "" {
+			t.Fatalf("sign-in = %d %s", rec.Code, rec.Body.String())
+		}
+		return out.SessionInfo.ID
+	}
+	device := `MediaBrowser Client="Lenna", DeviceId="dev-1"`
+	if a, b := sessionID(device), sessionID(device); a != b {
+		t.Errorf("same device got Ids %s and %s", a, b)
+	}
+	if a, b := sessionID(`MediaBrowser Client="Lenna"`), sessionID(`MediaBrowser Client="Lenna"`); a == b {
+		t.Errorf("two sign-ins without a DeviceId share Id %s", a)
+	}
 }
