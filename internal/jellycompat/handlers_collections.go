@@ -236,6 +236,23 @@ func (h *ItemsHandler) collectionsForViewer(ctx context.Context, session *Sessio
 	return catalog.CollectionsShownToViewer(collections, counts)
 }
 
+// listViewerCollections returns the collections the session sees as BoxSets:
+// those in a visible library (optionally only libFilter) that keep accepts and
+// that hold something the viewer can see.
+func (h *ItemsHandler) listViewerCollections(ctx context.Context, session *Session, visible map[int]struct{}, libFilter *int, keep func(*models.LibraryCollection) bool) ([]*models.LibraryCollection, error) {
+	collections, err := h.collections.ListAll(ctx, libFilter, catalog.ListLibraryCollectionsOptions{})
+	if err != nil {
+		return nil, err
+	}
+	matched := make([]*models.LibraryCollection, 0, len(collections))
+	for _, c := range collections {
+		if collectionVisible(c, visible) && (keep == nil || keep(c)) {
+			matched = append(matched, c)
+		}
+	}
+	return h.collectionsForViewer(ctx, session, matched), nil
+}
+
 // boxSetsFromCollections maps collections to BoxSet DTOs carrying the posters
 // the session's viewer sees.
 func (h *ItemsHandler) boxSetsFromCollections(ctx context.Context, session *Session, collections []*models.LibraryCollection) []baseItemDTO {
@@ -391,35 +408,28 @@ func (h *ItemsHandler) handleBoxSetsList(w http.ResponseWriter, r *http.Request,
 		libFilter = &query.parentLibraryID
 	}
 
-	collections, err := h.collections.ListAll(r.Context(), libFilter, catalog.ListLibraryCollectionsOptions{})
+	searchTerm := strings.ToLower(strings.TrimSpace(query.searchTerm))
+	namePrefix := strings.ToLower(query.namePrefix)
+	matched, err := h.listViewerCollections(r.Context(), session, visible, libFilter, func(c *models.LibraryCollection) bool {
+		title := strings.ToLower(c.Title)
+		if searchTerm != "" && !strings.Contains(title, searchTerm) {
+			return false
+		}
+		if namePrefix != "" && !strings.HasPrefix(title, namePrefix) {
+			return false
+		}
+		if query.nameLessThan != "" && title >= strings.ToLower(query.nameLessThan) {
+			return false
+		}
+		if query.nameStartsWithOrGreater != "" && title < strings.ToLower(query.nameStartsWithOrGreater) {
+			return false
+		}
+		return true
+	})
 	if err != nil {
 		writeCompatUpstreamError(w, err)
 		return
 	}
-
-	searchTerm := strings.ToLower(strings.TrimSpace(query.searchTerm))
-	namePrefix := strings.ToLower(query.namePrefix)
-	matched := make([]*models.LibraryCollection, 0, len(collections))
-	for _, c := range collections {
-		if !collectionVisible(c, visible) {
-			continue
-		}
-		title := strings.ToLower(c.Title)
-		if searchTerm != "" && !strings.Contains(title, searchTerm) {
-			continue
-		}
-		if namePrefix != "" && !strings.HasPrefix(title, namePrefix) {
-			continue
-		}
-		if query.nameLessThan != "" && title >= strings.ToLower(query.nameLessThan) {
-			continue
-		}
-		if query.nameStartsWithOrGreater != "" && title < strings.ToLower(query.nameStartsWithOrGreater) {
-			continue
-		}
-		matched = append(matched, c)
-	}
-	matched = h.collectionsForViewer(r.Context(), session, matched)
 
 	if query.sort == "sort_title" {
 		ascending := query.order != "desc"

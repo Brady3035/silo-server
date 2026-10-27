@@ -1112,6 +1112,91 @@ func (h *ItemsHandler) HandleFiltersStub(w http.ResponseWriter, r *http.Request)
 	}{Genres: filters.Genres, Tags: []string{}, OfficialRatings: filters.OfficialRatings, Years: filters.Years})
 }
 
+// itemCountsDTO is Jellyfin's ItemCounts. Silo's compat surface has no music,
+// trailers, books or Live TV, so those kinds always count zero.
+type itemCountsDTO struct {
+	MovieCount      int
+	SeriesCount     int
+	EpisodeCount    int
+	ArtistCount     int
+	ProgramCount    int
+	TrailerCount    int
+	SongCount       int
+	AlbumCount      int
+	MusicVideoCount int
+	BoxSetCount     int
+	BookCount       int
+	ItemCount       int
+}
+
+// HandleItemCounts serves GET /Items/Counts: how many movies, series, episodes
+// and box sets the caller can see, optionally only their favorites. Seasons are
+// left out of ItemCount, which Jellyfin otherwise sums over every item type.
+func (h *ItemsHandler) HandleItemCounts(w http.ResponseWriter, r *http.Request) {
+	if h.content == nil {
+		writeError(w, 503, "Unavailable", "Catalog unavailable")
+		return
+	}
+	session := SessionFromContext(r.Context())
+	if session == nil {
+		writeError(w, 401, "Unauthorized", "Missing authentication token")
+		return
+	}
+	q := newCaseInsensitiveQuery(r.URL.Query())
+	if userID := q.Get("userId"); userID != "" && !validatePseudoUser(w, userID, session) {
+		return
+	}
+	isFavorite := parseBool(q.Get("isFavorite"), false)
+
+	count := func(itemType string) (int, error) {
+		params := url.Values{}
+		params.Set("type", itemType)
+		params.Set("limit", "1")
+		params.Set("count_only", "true")
+		if isFavorite {
+			params.Set("compose_state", "true")
+			params.Set("is_favorite", "true")
+		}
+		result, err := h.content.BrowseItems(r.Context(), session, params)
+		if err != nil {
+			return 0, err
+		}
+		return result.Total, nil
+	}
+	var counts itemCountsDTO
+	for _, c := range []struct {
+		itemType string
+		dst      *int
+	}{
+		{compatMovieType, &counts.MovieCount},
+		{compatSeriesType, &counts.SeriesCount},
+		{compatEpisodeType, &counts.EpisodeCount},
+	} {
+		n, err := count(c.itemType)
+		if err != nil {
+			writeCompatUpstreamError(w, err)
+			return
+		}
+		*c.dst = n
+	}
+	// Favorites cover catalog items only, so no box set is ever a favorite.
+	if h.collections != nil && !isFavorite {
+		visible, err := h.visibleLibraryIDs(r.Context(), session)
+		if err != nil {
+			writeCompatUpstreamError(w, err)
+			return
+		}
+		boxSets, err := h.listViewerCollections(r.Context(), session, visible, nil, nil)
+		if err != nil {
+			writeCompatUpstreamError(w, err)
+			return
+		}
+		counts.BoxSetCount = len(boxSets)
+	}
+	counts.ItemCount = counts.MovieCount + counts.SeriesCount + counts.EpisodeCount + counts.BoxSetCount
+	writeJSON(w, http.StatusOK, counts)
+}
+
 // HandleFilters2Stub serves current query-filter genres from visible items.
 func (h *ItemsHandler) HandleFilters2Stub(w http.ResponseWriter, r *http.Request) {
 	if h.content == nil || h.codec == nil {
