@@ -1284,11 +1284,24 @@ func (r *EpisodeRepository) ListUpcoming(ctx context.Context, since time.Time, s
 }
 
 // BrowseEpisodes applies catalog and profile predicates before counting and
-// paging, so a long series only hydrates the selected page.
+// paging, so a long series only hydrates the selected page. An empty seriesID
+// browses the episodes of every series, by default in series sort-title order,
+// and filters.LibraryID narrows it to one library. A zero filters.Limit only
+// counts.
 func (r *EpisodeRepository) BrowseEpisodes(ctx context.Context, seriesID, seasonID string, seasonNumber *int, startItemID string, filters BrowseFilters, access AccessFilter, includeTotal bool) ([]*models.Episode, int, error) {
-	conditions := []string{"e.series_id = $1", "EXISTS (SELECT 1 FROM episode_libraries el WHERE el.episode_id=e.content_id)"}
-	args := []any{seriesID}
-	index := 2
+	conditions := []string{"EXISTS (SELECT 1 FROM episode_libraries el WHERE el.episode_id=e.content_id)"}
+	args := []any{}
+	index := 1
+	if seriesID != "" {
+		conditions = append(conditions, "e.series_id = $1")
+		args = append(args, seriesID)
+		index++
+	}
+	if filters.LibraryID > 0 {
+		conditions = append(conditions, fmt.Sprintf("EXISTS (SELECT 1 FROM episode_libraries el WHERE el.episode_id=e.content_id AND el.media_folder_id=$%d)", index))
+		args = append(args, filters.LibraryID)
+		index++
+	}
 	appendLibraryAccessConditions("s.content_id", access, &conditions, &args, &index)
 	applyAccessFilter("s", access, &conditions, &args, &index)
 	if seasonID != "" {
@@ -1328,6 +1341,9 @@ func (r *EpisodeRepository) BrowseEpisodes(ctx context.Context, seriesID, season
 		conditions = append(conditions, "COALESCE(s.backdrop_path,'') <> ''")
 	}
 	order := "e.season_number, e.episode_number, e.content_id"
+	if seriesID == "" {
+		order = "series_sort, " + order
+	}
 	switch filters.Sort {
 	case BrowseSortTitle:
 		order = "LOWER(e.title), e.content_id"
@@ -1354,9 +1370,13 @@ func (r *EpisodeRepository) BrowseEpisodes(ctx context.Context, seriesID, season
 			return nil, 0, err
 		}
 	}
-	args = append(args, min(max(filters.Limit, 0), MaxEpisodePageSize), max(filters.Offset, 0))
+	if filters.Limit <= 0 {
+		return []*models.Episode{}, total, nil
+	}
+	args = append(args, min(filters.Limit, MaxEpisodePageSize), max(filters.Offset, 0))
 	pageOrder := strings.ReplaceAll(order, "e.", "episode_page.")
-	query := "SELECT " + episodeColumns + " FROM (SELECT e.*" + from + fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", order, index, index+1) + ") episode_page" + " ORDER BY " + pageOrder
+	pageOrder = strings.ReplaceAll(pageOrder, "series_sort", "episode_page.series_sort")
+	query := "SELECT " + episodeColumns + " FROM (SELECT e.*, " + strings.ReplaceAll(sortTitleKeyExpr, "mi.", "s.") + " AS series_sort" + from + fmt.Sprintf(" ORDER BY %s LIMIT $%d OFFSET $%d", order, index, index+1) + ") episode_page" + " ORDER BY " + pageOrder
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err

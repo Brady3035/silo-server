@@ -134,7 +134,7 @@ func TestRouter_ItemCounts(t *testing.T) {
 	if err := store.Put(session); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
-	content := &itemCountsContentService{totals: map[string]int{"movie": 3, "series": 2, "episode": 40}}
+	content := &itemCountsContentService{totals: map[string]int{"movie": 3, "series": 2}}
 	router := NewRouter(Dependencies{Config: cfg, SessionStore: store, ContentService: content})
 
 	get := func(path string) *httptest.ResponseRecorder {
@@ -153,7 +153,7 @@ func TestRouter_ItemCounts(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &counts); err != nil {
 		t.Fatalf("decode ItemCounts: %v; body=%s", err, rec.Body.String())
 	}
-	if want := (itemCountsDTO{MovieCount: 3, SeriesCount: 2, EpisodeCount: 40, ItemCount: 45}); counts != want {
+	if want := (itemCountsDTO{MovieCount: 3, SeriesCount: 2, ItemCount: 5}); counts != want {
 		t.Errorf("ItemCounts = %+v, want %+v", counts, want)
 	}
 	for _, p := range content.params {
@@ -166,8 +166,8 @@ func TestRouter_ItemCounts(t *testing.T) {
 	if rec := get("/Items/Counts?IsFavorite=true"); rec.Code != http.StatusOK {
 		t.Fatalf("GET /Items/Counts?IsFavorite=true = %d, want 200", rec.Code)
 	}
-	if len(content.params) != 3 {
-		t.Fatalf("favorite counts browsed %d times, want 3", len(content.params))
+	if len(content.params) != 2 {
+		t.Fatalf("favorite counts browsed %d times, want 2", len(content.params))
 	}
 	for _, p := range content.params {
 		if p.Get("is_favorite") != "true" {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 
@@ -349,6 +351,55 @@ func TestItemsViewsPresentationControls(t *testing.T) {
 					t.Fatal("user data controls ignored")
 				}
 			})
+		}
+	}
+}
+
+// TestEpisodeOnlyBrowseSpansEverySeries pins that IncludeItemTypes=Episode with
+// no series or season parent pages the episode browse across every series,
+// scoped to the ParentId library, instead of the media_items browse, which holds
+// no episodes; and that /Items/Counts counts episodes the same way.
+func TestEpisodeOnlyBrowseSpansEverySeries(t *testing.T) {
+	codec := NewResourceIDCodec()
+	newHandler := func(repo *boundedEpisodeContractRepo) *ItemsHandler {
+		return &ItemsHandler{catalogUserState: true, content: &itemCountsContentService{totals: map[string]int{"movie": 3, "series": 2}}, episodeRepo: repo, codec: codec, mapper: newMapper(codec, &config.Config{}), userData: &mockUserDataService{}, images: NewImageCache(time.Hour, time.Now), accessFilter: func(context.Context, int, string) catalog.AccessFilter {
+			return catalog.AccessFilter{AllowedLibraryIDs: []int{3}}
+		}}
+	}
+
+	repo := &boundedEpisodeContractRepo{}
+	library := codec.EncodeIntID(EncodedIDLibrary, 3)
+	result := performItemsRequest(t, newHandler(repo), "/Items?IncludeItemTypes=Episode&Recursive=true&ParentId="+library+"&StartIndex=2&Limit=1")
+	if repo.seriesID != "" || repo.filters.LibraryID != 3 || repo.filters.Offset != 2 || repo.filters.Limit != 1 || !repo.includeTotal {
+		t.Fatalf("episode browse scope = series %q filters %+v includeTotal %v", repo.seriesID, repo.filters, repo.includeTotal)
+	}
+	if result.TotalRecordCount != 6 || len(result.Items) != 1 || result.Items[0].ID != codec.EncodeStringID(EncodedIDItem, "selected") {
+		t.Fatalf("episode page = total %d items %+v", result.TotalRecordCount, result.Items)
+	}
+
+	// Favorites are joined to media_items too, so an episode-only favorite
+	// browse takes the episode browse as well.
+	repo = &boundedEpisodeContractRepo{}
+	result = performItemsRequest(t, newHandler(repo), "/Items?IncludeItemTypes=Episode&Recursive=true&IsFavorite=true&Limit=1")
+	if repo.seriesID != "" || !repo.filters.IsFavorite || result.TotalRecordCount != 6 {
+		t.Fatalf("favorite episode browse = series %q filters %+v total %d", repo.seriesID, repo.filters, result.TotalRecordCount)
+	}
+
+	for _, favorite := range []bool{false, true} {
+		repo := &boundedEpisodeContractRepo{}
+		req := httptest.NewRequest(http.MethodGet, "/Items/Counts?IsFavorite="+strconv.FormatBool(favorite), nil)
+		req = req.WithContext(context.WithValue(req.Context(), compatSessionKey, collectionsTestSession()))
+		rec := httptest.NewRecorder()
+		newHandler(repo).HandleItemCounts(rec, req)
+		var counts itemCountsDTO
+		if err := json.Unmarshal(rec.Body.Bytes(), &counts); err != nil {
+			t.Fatalf("decode ItemCounts: %v; body=%s", err, rec.Body.String())
+		}
+		if repo.seriesID != "" || repo.filters.Limit != 0 || repo.filters.IsFavorite != favorite || !repo.includeTotal {
+			t.Fatalf("favorite=%v episode count query = series %q filters %+v", favorite, repo.seriesID, repo.filters)
+		}
+		if counts.EpisodeCount != 6 || counts.ItemCount != 3+2+6 {
+			t.Fatalf("favorite=%v ItemCounts = %+v, want 6 episodes of 11 items", favorite, counts)
 		}
 	}
 }

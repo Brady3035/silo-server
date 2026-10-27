@@ -284,6 +284,42 @@ func TestJellycompatPredicatesPostgres(t *testing.T) {
 			}
 		}
 	})
+	t.Run("episodes across series", func(t *testing.T) {
+		// A series sort title ahead of the other puts its episodes first; the
+		// metadata-only episode has no library row and stays out.
+		exec(`UPDATE media_items SET sort_title='A Synthetic Series' WHERE content_id=$1`, otherSeries)
+		defer exec(`UPDATE media_items SET sort_title=NULL WHERE content_id=$1`, otherSeries)
+		all := BrowseFilters{UserID: userID, ProfileID: profiles[0], LibraryID: libraryID, Limit: 10}
+		items, total, err := episodes.BrowseEpisodes(ctx, "", "", nil, "", all, access, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{episodeIDs[5], episodeIDs[0], episodeIDs[1], episodeIDs[2], episodeIDs[3], episodeIDs[4]}
+		got := make([]string, 0, len(items))
+		for _, item := range items {
+			got = append(got, item.ContentID)
+		}
+		if total != len(want) || !slices.Equal(got, want) {
+			t.Fatalf("all-series page total=%d items=%v, want %v", total, got, want)
+		}
+
+		favorites := all
+		favorites.IsFavorite = true
+		favorites.Limit = 0
+		items, total, err = episodes.BrowseEpisodes(ctx, "", "", nil, "", favorites, access, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if total != 5 || len(items) != 0 {
+			t.Fatalf("favorite count total=%d items=%d, want 5 and no page", total, len(items))
+		}
+
+		otherLibrary := all
+		otherLibrary.LibraryID = disabledID
+		if _, total, err = episodes.BrowseEpisodes(ctx, "", "", nil, "", otherLibrary, access, true); err != nil || total != 0 {
+			t.Fatalf("other library total=%d err=%v, want 0", total, err)
+		}
+	})
 	t.Run("episode parent numeric season count offset", func(t *testing.T) {
 		items, total, err := episodes.BrowseEpisodes(ctx, seriesID, "", new(1), "", q, access, true)
 		if err != nil {
