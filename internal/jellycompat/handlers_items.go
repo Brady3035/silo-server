@@ -2241,6 +2241,12 @@ func (h *ItemsHandler) episodeOnlyBrowser(query itemsQuery) (episodeBrowser, boo
 // so a SortName sort keeps the series, season and episode order.
 func (h *ItemsHandler) handleEpisodeBrowse(w http.ResponseWriter, r *http.Request, session *Session, query itemsQuery, repo episodeBrowser) {
 	access, filters := h.episodeBrowseFilters(r.Context(), session, query)
+	// The access filter checks each episode's series, so a ParentId library is
+	// intersected with the session's libraries before episodes are matched to it.
+	if query.parentLibraryID > 0 && !narrowAccessToLibrary(&access, query.parentLibraryID) {
+		writeJSON(w, http.StatusOK, emptyQueryResult(query.startIndex))
+		return
+	}
 	filters.LibraryID = query.parentLibraryID
 	if filters.Sort == catalog.BrowseSortTitle {
 		filters.Sort = ""

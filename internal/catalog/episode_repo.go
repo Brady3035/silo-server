@@ -1358,9 +1358,15 @@ func (r *EpisodeRepository) BrowseEpisodes(ctx context.Context, seriesID, season
 		order = "e.air_date, e.season_number, e.episode_number, e.content_id"
 	case BrowseSortCreatedAt:
 		order = "e.created_at, e.content_id"
+	case BrowseSortRatingIMDB:
+		order = "e.rating_imdb, e.season_number, e.episode_number, e.content_id"
+	case BrowseSortYear:
+		order = "EXTRACT(YEAR FROM e.air_date), e.air_date, e.season_number, e.episode_number, e.content_id"
 	}
 	if filters.Order == BrowseOrderDescending {
 		order = strings.ReplaceAll(order, ",", " DESC,") + " DESC"
+		// Unrated episodes stay last, as in the catalog browse.
+		order = strings.Replace(order, "e.rating_imdb DESC", "e.rating_imdb DESC NULLS LAST", 1)
 	}
 	if startItemID != "" {
 		// StartItemId uses the natural episode queue. Other sorting still orders the

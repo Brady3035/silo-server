@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -378,6 +379,18 @@ func TestEpisodeOnlyBrowseSpansEverySeries(t *testing.T) {
 	}
 	if result.TotalRecordCount != 6 {
 		t.Fatalf("episode page total = %d, want the episode browse's 6", result.TotalRecordCount)
+	}
+	if !slices.Equal(repo.access.AllowedLibraryIDs, []int{3}) {
+		t.Fatalf("episode browse access = %v, want it narrowed to the ParentId library", repo.access.AllowedLibraryIDs)
+	}
+
+	// Episodes are access-checked through their series, which may also sit in
+	// a library the session can see, so a ParentId library the session cannot
+	// see never reaches the browse.
+	repo = &boundedEpisodeContractRepo{}
+	result = performItemsRequest(t, newHandler(repo), "/Items?IncludeItemTypes=Episode&Recursive=true&ParentId="+codec.EncodeIntID(EncodedIDLibrary, 4))
+	if repo.filters.LibraryID != 0 || result.TotalRecordCount != 0 || len(result.Items) != 0 {
+		t.Fatalf("forbidden library browse = filters %+v total %d", repo.filters, result.TotalRecordCount)
 	}
 
 	// Favorites are joined to media_items too, so an episode-only favorite

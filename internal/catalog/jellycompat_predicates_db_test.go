@@ -314,6 +314,20 @@ func TestJellycompatPredicatesPostgres(t *testing.T) {
 			t.Fatalf("favorite count total=%d items=%d, want 5 and no page", total, len(items))
 		}
 
+		// The highest-rated episode leads a descending rating sort, and unrated
+		// episodes stay last.
+		exec(`UPDATE episodes SET rating_imdb=CASE content_id WHEN $1 THEN 8.0 WHEN $2 THEN 9.0 END WHERE content_id=ANY($3)`, episodeIDs[1], episodeIDs[3], episodeIDs)
+		defer exec(`UPDATE episodes SET rating_imdb=NULL WHERE content_id=ANY($1)`, episodeIDs)
+		rated := all
+		rated.Sort, rated.Order = BrowseSortRatingIMDB, BrowseOrderDescending
+		items, _, err = episodes.BrowseEpisodes(ctx, "", "", nil, "", rated, access, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 6 || items[0].ContentID != episodeIDs[3] || items[1].ContentID != episodeIDs[1] {
+			t.Fatalf("rating order = %v, want e3 then e1 first", items)
+		}
+
 		// Filters the series listing shares map onto episode and series columns.
 		filtered := all
 		filtered.MinPremiereDate = "2024-01-01"
