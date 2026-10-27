@@ -2248,7 +2248,8 @@ func (h *ItemsHandler) handleEpisodeBrowse(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	filters.LibraryID = query.parentLibraryID
-	if filters.Sort == catalog.BrowseSortTitle {
+	// Name still sorts by episode title, as Jellyfin's NameComparer does.
+	if filters.Sort == catalog.BrowseSortTitle && sortsBySortName(newCaseInsensitiveQuery(r.URL.Query()).Get("SortBy")) {
 		filters.Sort = ""
 	}
 	if query.countOnly {

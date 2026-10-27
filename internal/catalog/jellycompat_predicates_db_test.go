@@ -288,7 +288,7 @@ func TestJellycompatPredicatesPostgres(t *testing.T) {
 		// A series sort title ahead of the other puts its episodes first; the
 		// metadata-only episode has no library row and stays out.
 		exec(`UPDATE media_items SET sort_title='A Synthetic Series' WHERE content_id=$1`, otherSeries)
-		defer exec(`UPDATE media_items SET sort_title=NULL WHERE content_id=$1`, otherSeries)
+		defer exec(`UPDATE media_items SET sort_title='' WHERE content_id=$1`, otherSeries)
 		all := BrowseFilters{UserID: userID, ProfileID: profiles[0], LibraryID: libraryID, Limit: 10}
 		items, total, err := episodes.BrowseEpisodes(ctx, "", "", nil, "", all, access, true)
 		if err != nil {

@@ -383,6 +383,12 @@ func TestEpisodeOnlyBrowseSpansEverySeries(t *testing.T) {
 	if !slices.Equal(repo.access.AllowedLibraryIDs, []int{3}) {
 		t.Fatalf("episode browse access = %v, want it narrowed to the ParentId library", repo.access.AllowedLibraryIDs)
 	}
+	// Name, unlike SortName, sorts by episode title, as Jellyfin's NameComparer does.
+	repo = &boundedEpisodeContractRepo{}
+	performItemsRequest(t, newHandler(repo), "/Items?IncludeItemTypes=Episode&Recursive=true&SortBy=Name")
+	if repo.filters.Sort != catalog.BrowseSortTitle {
+		t.Fatalf("SortBy=Name episode browse sort = %q, want %q", repo.filters.Sort, catalog.BrowseSortTitle)
+	}
 
 	// Episodes are access-checked through their series, which may also sit in
 	// a library the session can see, so a ParentId library the session cannot
