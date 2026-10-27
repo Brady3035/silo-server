@@ -2138,10 +2138,6 @@ func (h *ItemsHandler) writeSeriesEpisodesPage(w http.ResponseWriter, r *http.Re
 	}
 	access, filters := h.episodeBrowseFilters(r.Context(), session, query)
 	episodes, total, err := h.browseEpisodes(r.Context(), session, repo, seriesID, requestedSeasonID, query.seasonNumber, startID, filters, access, query.enableTotalRecordCount)
-	if errors.Is(err, errConfiguredUserStoreUnavailable) {
-		writeError(w, 503, "Unavailable", "Configured user store unavailable")
-		return
-	}
 	if err != nil {
 		writeCompatUpstreamError(w, err)
 		return
@@ -2169,7 +2165,7 @@ func (h *ItemsHandler) episodeBrowseFilters(ctx context.Context, session *Sessio
 		sortKey = query.sort
 		order = query.order
 	}
-	return access, catalog.BrowseFilters{UserID: session.StreamAppUserID, MaturityLimits: access.MaturityLimits, ProfileID: session.ProfileID, IsFavorite: query.isFavorite, IsPlayed: query.isPlayed, IsResumable: query.isResumable, Genres: query.genres, Genre: query.genreName, Years: query.years, SearchTerm: query.searchTerm, NamePrefix: query.namePrefix, PersonID: query.personID, RequireBackdrop: query.requireBackdrop, AudioLanguages: query.audioLanguages, SubtitleLanguages: query.subtitleLanguages, Limit: query.limit, Offset: query.startIndex, Sort: sortKey, Order: order}
+	return access, catalog.BrowseFilters{UserID: session.StreamAppUserID, MaturityLimits: access.MaturityLimits, ProfileID: session.ProfileID, IsFavorite: query.isFavorite, IsPlayed: query.isPlayed, IsResumable: query.isResumable, Genres: query.genres, Genre: query.genreName, Years: query.years, SearchTerm: query.searchTerm, NamePrefix: query.namePrefix, PersonID: query.personID, RequireBackdrop: query.requireBackdrop, AudioLanguages: query.audioLanguages, SubtitleLanguages: query.subtitleLanguages, ExcludeContentIDs: query.excludeIDs, Studios: query.studios, OfficialRatings: query.officialRatings, MinCommunityRating: query.minCommunityRating, MinPremiereDate: query.minPremiereDate, MaxPremiereDate: query.maxPremiereDate, NameLessThan: query.nameLessThan, NameStartsWithOrGreater: query.nameStartsWithOrGreater, Limit: query.limit, Offset: query.startIndex, Sort: sortKey, Order: order}
 }
 
 // browseEpisodes pages repo.BrowseEpisodes. The catalog applies favorite and
@@ -2231,7 +2227,7 @@ func (h *ItemsHandler) browseEpisodes(ctx context.Context, session *Session, rep
 // episodeOnlyBrowser returns the episode browse when query lists Episode alone
 // and no Ids, which the media_items browse and favorites cannot serve.
 func (h *ItemsHandler) episodeOnlyBrowser(query itemsQuery) (episodeBrowser, bool) {
-	if len(query.specificIDs) > 0 || !slices.Equal(query.itemTypes, []string{compatEpisodeType}) {
+	if len(query.specificIDs) > 0 || !slices.Equal(query.itemTypes, []string{compatEpisodeType}) || (query.mediaTypesExplicit && !query.mediaTypesSet["video"]) {
 		return nil, false
 	}
 	repo, ok := h.episodeRepo.(episodeBrowser)
@@ -2241,30 +2237,35 @@ func (h *ItemsHandler) episodeOnlyBrowser(query itemsQuery) (episodeBrowser, boo
 // handleEpisodeBrowse serves an /Items browse for Episode alone, such as
 // IncludeItemTypes=Episode&Recursive=true. The media_items browse holds no
 // episodes, so this pages the episodes of every series (or of the ParentId
-// library) and renders them as an Ids list does.
+// library). An episode's Jellyfin SortName is its season and episode number,
+// so a SortName sort keeps the series, season and episode order.
 func (h *ItemsHandler) handleEpisodeBrowse(w http.ResponseWriter, r *http.Request, session *Session, query itemsQuery, repo episodeBrowser) {
 	access, filters := h.episodeBrowseFilters(r.Context(), session, query)
 	filters.LibraryID = query.parentLibraryID
+	if filters.Sort == catalog.BrowseSortTitle {
+		filters.Sort = ""
+	}
 	if query.countOnly {
 		filters.Limit = 0
 	}
 	episodes, total, err := h.browseEpisodes(r.Context(), session, repo, "", "", nil, "", filters, access, query.enableTotalRecordCount)
-	if errors.Is(err, errConfiguredUserStoreUnavailable) {
-		writeError(w, 503, "Unavailable", "Configured user store unavailable")
-		return
-	}
 	if err != nil {
 		writeCompatUpstreamError(w, err)
 		return
 	}
-	items, err := h.detailListItems(r.Context(), session, query, contentIDsFromEpisodes(episodes))
+	contentIDs := contentIDsFromEpisodes(episodes)
+	targets, err := h.fetchCompatEpisodeTargetsByContentIDsWithDurations(r.Context(), session, contentIDs, nil)
 	if err != nil {
 		writeCompatUpstreamError(w, err)
 		return
 	}
-	h.applyListFileFields(r.Context(), session, items, query)
-	applyItemsResponseOptions(items, query)
-	writeJSON(w, http.StatusOK, queryResultDTO{Items: items, TotalRecordCount: total, StartIndex: query.startIndex})
+	listItems := make([]upstreamListItem, 0, len(contentIDs))
+	for _, contentID := range contentIDs {
+		if target, ok := targets[contentID]; ok {
+			listItems = append(listItems, target.Item)
+		}
+	}
+	h.writeListItemsPage(w, r, session, query, "", listItems, targets, total)
 }
 
 // writeEpisodeModelsPage maps a resolved set of episode models to Jellyfin
@@ -3143,10 +3144,32 @@ func (h *ItemsHandler) handleSpecificItems(w http.ResponseWriter, r *http.Reques
 		}
 		query.specificIDs = ids
 	}
-	items, err := h.detailListItems(r.Context(), session, query, query.specificIDs)
+	favorites, progress, err := resolveUserStateForContentIDs(r.Context(), session, h.userData, query.specificIDs)
 	if err != nil {
 		writeCompatUpstreamError(w, err)
 		return
+	}
+
+	items := make([]baseItemDTO, 0, len(query.specificIDs))
+	savedMode := savedCompatSubtitleMode(r.Context(), h.storeProvider, session)
+	details, err := h.specificItemDetails(r.Context(), session, query.specificIDs, libraryIDPtr(query.parentLibraryID), query.requestedFields)
+	if err != nil {
+		writeCompatUpstreamError(w, err)
+		return
+	}
+	for _, detail := range details {
+		h.rememberDetailImages(*detail)
+		dto := h.mapper.itemFromDetailWithFields(*detail, favorites[detail.ContentID], progress[detail.ContentID], query.requestedFields)
+		if query.requestedFields == nil {
+			// Without Fields the mapper fills every list field, as for item
+			// detail; a list leaves out the empty ones nobody asked for.
+			dropUnrequestedEmptyLists(&dto, func(string) bool { return false })
+		}
+		if query.mediaTypesExplicit && !query.mediaTypesSet[strings.ToLower(dto.MediaType)] {
+			continue
+		}
+		h.populateDetailSubtitles(r.Context(), detail, &dto, savedMode)
+		items = append(items, dto)
 	}
 
 	// Ids= may also reference collections (BoxSet route IDs handed out by the
@@ -3196,39 +3219,6 @@ func (h *ItemsHandler) handleSpecificItems(w http.ResponseWriter, r *http.Reques
 	h.applyListFileFields(r.Context(), session, items, query)
 	applyItemsResponseOptions(items, query)
 	writeJSON(w, http.StatusOK, queryResultDTO{Items: items, TotalRecordCount: total, StartIndex: query.startIndex})
-}
-
-// detailListItems renders contentIDs, in order, as the items of a list built
-// from their details, as an Ids list is.
-func (h *ItemsHandler) detailListItems(ctx context.Context, session *Session, query itemsQuery, contentIDs []string) ([]baseItemDTO, error) {
-	items := make([]baseItemDTO, 0, len(contentIDs))
-	if len(contentIDs) == 0 {
-		return items, nil
-	}
-	favorites, progress, err := resolveUserStateForContentIDs(ctx, session, h.userData, contentIDs)
-	if err != nil {
-		return nil, err
-	}
-	savedMode := savedCompatSubtitleMode(ctx, h.storeProvider, session)
-	details, err := h.specificItemDetails(ctx, session, contentIDs, libraryIDPtr(query.parentLibraryID), query.requestedFields)
-	if err != nil {
-		return nil, err
-	}
-	for _, detail := range details {
-		h.rememberDetailImages(*detail)
-		dto := h.mapper.itemFromDetailWithFields(*detail, favorites[detail.ContentID], progress[detail.ContentID], query.requestedFields)
-		if query.requestedFields == nil {
-			// Without Fields the mapper fills every list field, as for item
-			// detail; a list leaves out the empty ones nobody asked for.
-			dropUnrequestedEmptyLists(&dto, func(string) bool { return false })
-		}
-		if query.mediaTypesExplicit && !query.mediaTypesSet[strings.ToLower(dto.MediaType)] {
-			continue
-		}
-		h.populateDetailSubtitles(ctx, detail, &dto, savedMode)
-		items = append(items, dto)
-	}
-	return items, nil
 }
 
 // specificItemDetails returns the details of an Ids list in its order. One
@@ -4209,6 +4199,10 @@ func max(value, fallback int) int {
 }
 
 func writeCompatUpstreamError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errConfiguredUserStoreUnavailable) {
+		writeError(w, http.StatusServiceUnavailable, "Unavailable", "Configured user store unavailable")
+		return
+	}
 	if errors.Is(err, errUpstreamReplaced) {
 		writeError(w, http.StatusConflict, "Conflict", "Playback session changed concurrently; retry the request")
 		return

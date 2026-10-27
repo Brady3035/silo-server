@@ -166,9 +166,12 @@ ISO 639-2 codes such as `eng` match the stored canonical codes.
 
 An `/Items` browse whose only item type is `Episode`, with no series or season
 `ParentId` (such as `IncludeItemTypes=Episode&Recursive=true`), lists the
-visible episodes of every series, or of the library `ParentId` names. Unless a
-sort is requested they come in series sort-title order, then season and episode
-number. The same series-episode predicates apply, `IsFavorite=true` included.
+visible episodes of every series, or of the library `ParentId` names, in series
+sort-title order, then season and episode number. `SortName` keeps that order,
+since a Jellyfin episode's sort name is its season and episode number. Episode
+listings here and on series and season parents apply the item-query predicates,
+`IsFavorite=true` included; studios, official ratings and genres are the
+series', and premiere dates are the episodes' air dates.
 
 `/Shows/{id}/Episodes` accepts numeric `Season`, `SeasonId`, `StartItemId`,
 `StartIndex`, and `Limit`. As in Jellyfin 12.1, an explicit `SeasonId` selects

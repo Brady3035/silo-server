@@ -1289,7 +1289,7 @@ func (r *EpisodeRepository) ListUpcoming(ctx context.Context, since time.Time, s
 // and filters.LibraryID narrows it to one library. A zero filters.Limit only
 // counts.
 func (r *EpisodeRepository) BrowseEpisodes(ctx context.Context, seriesID, seasonID string, seasonNumber *int, startItemID string, filters BrowseFilters, access AccessFilter, includeTotal bool) ([]*models.Episode, int, error) {
-	conditions := []string{"EXISTS (SELECT 1 FROM episode_libraries el WHERE el.episode_id=e.content_id)"}
+	conditions := []string{}
 	args := []any{}
 	index := 1
 	if seriesID != "" {
@@ -1301,6 +1301,8 @@ func (r *EpisodeRepository) BrowseEpisodes(ctx context.Context, seriesID, season
 		conditions = append(conditions, fmt.Sprintf("EXISTS (SELECT 1 FROM episode_libraries el WHERE el.episode_id=e.content_id AND el.media_folder_id=$%d)", index))
 		args = append(args, filters.LibraryID)
 		index++
+	} else {
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM episode_libraries el WHERE el.episode_id=e.content_id)")
 	}
 	appendLibraryAccessConditions("s.content_id", access, &conditions, &args, &index)
 	applyAccessFilter("s", access, &conditions, &args, &index)
@@ -1318,7 +1320,11 @@ func (r *EpisodeRepository) BrowseEpisodes(ctx context.Context, seriesID, season
 	// Language predicates count only the episode files this viewer may play.
 	filters.LibraryIDs, filters.DisabledLibraryIDs, filters.MaxPlaybackQuality = access.AllowedLibraryIDs, access.DisabledLibraryIDs, access.MaxPlaybackQuality
 	appendCompatBrowsePredicates(filters, &extra, &args, &index)
-	rewrite := strings.NewReplacer("mi.content_id", "e.content_id", "mi.genres", "s.genres", "mi.year", "EXTRACT(YEAR FROM e.air_date)::int", "mi.title", "e.title")
+	// Episode fields stand in for an item's own; studios, genres and ratings
+	// come from the series.
+	rewrite := strings.NewReplacer(premiereDateKeyExpr, "e.air_date::text", sortTitleKeyExpr, "LOWER(e.title)",
+		"mi.content_id", "e.content_id", "mi.genres", "s.genres", "mi.studios", "s.studios", "mi.content_rating", "s.content_rating",
+		"mi.rating_imdb", "e.rating_imdb", "mi.year", "EXTRACT(YEAR FROM e.air_date)::int", "mi.title", "e.title")
 	for _, condition := range extra {
 		conditions = append(conditions, rewrite.Replace(condition))
 	}
@@ -1342,7 +1348,7 @@ func (r *EpisodeRepository) BrowseEpisodes(ctx context.Context, seriesID, season
 	}
 	order := "e.season_number, e.episode_number, e.content_id"
 	if seriesID == "" {
-		order = "series_sort, " + order
+		order = "series_sort, e.series_id, " + order
 	}
 	switch filters.Sort {
 	case BrowseSortTitle:

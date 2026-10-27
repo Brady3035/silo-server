@@ -314,6 +314,19 @@ func TestJellycompatPredicatesPostgres(t *testing.T) {
 			t.Fatalf("favorite count total=%d items=%d, want 5 and no page", total, len(items))
 		}
 
+		// Filters the series listing shares map onto episode and series columns.
+		filtered := all
+		filtered.MinPremiereDate = "2024-01-01"
+		filtered.ExcludeContentIDs = []string{episodeIDs[0]}
+		filtered.OfficialRatings = []string{"PG"}
+		items, total, err = episodes.BrowseEpisodes(ctx, "", "", nil, "", filtered, access, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if total != 4 || len(items) != 4 {
+			t.Fatalf("filtered total=%d items=%d, want the four 2024 episodes other than e0", total, len(items))
+		}
+
 		otherLibrary := all
 		otherLibrary.LibraryID = disabledID
 		if _, total, err = episodes.BrowseEpisodes(ctx, "", "", nil, "", otherLibrary, access, true); err != nil || total != 0 {

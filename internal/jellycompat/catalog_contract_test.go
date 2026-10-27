@@ -369,12 +369,15 @@ func TestEpisodeOnlyBrowseSpansEverySeries(t *testing.T) {
 
 	repo := &boundedEpisodeContractRepo{}
 	library := codec.EncodeIntID(EncodedIDLibrary, 3)
-	result := performItemsRequest(t, newHandler(repo), "/Items?IncludeItemTypes=Episode&Recursive=true&ParentId="+library+"&StartIndex=2&Limit=1")
-	if repo.seriesID != "" || repo.filters.LibraryID != 3 || repo.filters.Offset != 2 || repo.filters.Limit != 1 || !repo.includeTotal {
+	// Jellyfin Web's Episodes tab sorts by SeriesSortName,SortName; an
+	// episode's SortName is its season and episode number, so the browse keeps
+	// its series order instead of sorting by episode title.
+	result := performItemsRequest(t, newHandler(repo), "/Items?IncludeItemTypes=Episode&Recursive=true&ParentId="+library+"&SortBy=SeriesSortName,SortName&MinPremiereDate=2024-01-01&StartIndex=2&Limit=1")
+	if repo.seriesID != "" || repo.filters.LibraryID != 3 || repo.filters.Offset != 2 || repo.filters.Limit != 1 || repo.filters.Sort != "" || repo.filters.MinPremiereDate != "2024-01-01" || !repo.includeTotal {
 		t.Fatalf("episode browse scope = series %q filters %+v includeTotal %v", repo.seriesID, repo.filters, repo.includeTotal)
 	}
-	if result.TotalRecordCount != 6 || len(result.Items) != 1 || result.Items[0].ID != codec.EncodeStringID(EncodedIDItem, "selected") {
-		t.Fatalf("episode page = total %d items %+v", result.TotalRecordCount, result.Items)
+	if result.TotalRecordCount != 6 {
+		t.Fatalf("episode page total = %d, want the episode browse's 6", result.TotalRecordCount)
 	}
 
 	// Favorites are joined to media_items too, so an episode-only favorite

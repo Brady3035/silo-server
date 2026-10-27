@@ -690,7 +690,7 @@ func (h *ItemsHandler) handleBoxSetChildren(w http.ResponseWriter, r *http.Reque
 				writeCompatUpstreamError(w, hydrateErr)
 				return
 			}
-			h.writeCollectionItemsPage(w, r, session, query, routeID, ordered, episodeTargets, len(sorted))
+			h.writeListItemsPage(w, r, session, query, routeID, ordered, episodeTargets, len(sorted))
 			return
 		}
 
@@ -710,7 +710,7 @@ func (h *ItemsHandler) handleBoxSetChildren(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	page := slicePage(ordered, query.startIndex, query.limit)
-	h.writeCollectionItemsPage(w, r, session, query, routeID, page, episodeTargets, len(ordered))
+	h.writeListItemsPage(w, r, session, query, routeID, page, episodeTargets, len(ordered))
 }
 
 // writeCollectionBrowsePage lets the catalog browse order, filter, and page a
@@ -721,7 +721,7 @@ func (h *ItemsHandler) writeCollectionBrowsePage(w http.ResponseWriter, r *http.
 		writeCompatUpstreamError(w, err)
 		return
 	}
-	h.writeCollectionItemsPage(w, r, session, query, routeID, result.Items, nil, result.Total)
+	h.writeListItemsPage(w, r, session, query, routeID, result.Items, nil, result.Total)
 }
 
 // writeStoredCollectionPage writes one page of a stored collection in curated
@@ -744,7 +744,7 @@ func (h *ItemsHandler) writeStoredCollectionPage(w http.ResponseWriter, r *http.
 		writeCompatUpstreamError(w, err)
 		return
 	}
-	h.writeCollectionItemsPage(w, r, session, query, routeID, ordered, nil, total)
+	h.writeListItemsPage(w, r, session, query, routeID, ordered, nil, total)
 }
 
 // storedCollectionContentIDPage returns the [offset, offset+limit) window of a
@@ -809,7 +809,7 @@ func (h *ItemsHandler) writeSmartCollectionPage(w http.ResponseWriter, r *http.R
 		return
 	}
 	routeID := h.codec.EncodeStringID(EncodedIDCollection, collection.ID)
-	h.writeCollectionItemsPage(w, r, session, query, routeID, ordered, episodeTargets, total)
+	h.writeListItemsPage(w, r, session, query, routeID, ordered, episodeTargets, total)
 }
 
 // sortEpisodeMembers orders episode members by the client's SortBy without
@@ -982,7 +982,7 @@ func (h *ItemsHandler) handleBoxSetLeaves(w http.ResponseWriter, r *http.Request
 		return
 	}
 	routeID := h.codec.EncodeStringID(EncodedIDCollection, collection.ID)
-	h.writeCollectionItemsPage(w, r, session, query, routeID, listItems, episodeTargets, len(leaves))
+	h.writeListItemsPage(w, r, session, query, routeID, listItems, episodeTargets, len(leaves))
 }
 
 // expandCollectionLeaves turns movie and series members into playable leaf
@@ -1164,13 +1164,14 @@ func (h *ItemsHandler) hydrateCollectionMembers(ctx context.Context, session *Se
 	return ordered, episodeTargets, nil
 }
 
-// writeCollectionItemsPage hydrates user state for one page of collection
-// members and writes the /Items result with ParentId stamped on each child.
+// writeListItemsPage hydrates user state for one page of list items, such as
+// collection members, and writes the /Items result, stamping routeID as each
+// item's ParentId unless it is empty.
 // Detail-level Fields (MediaSources, Path, ...) upgrade each child to its
 // detail DTO, as the library-parent browse path does; Infuse treats children
 // without them as unplayable. Episode members also get their season and
 // series context from episodeTargets.
-func (h *ItemsHandler) writeCollectionItemsPage(w http.ResponseWriter, r *http.Request, session *Session, query itemsQuery, routeID string, listItems []upstreamListItem, episodeTargets map[string]compatEpisodeTarget, total int) {
+func (h *ItemsHandler) writeListItemsPage(w http.ResponseWriter, r *http.Request, session *Session, query itemsQuery, routeID string, listItems []upstreamListItem, episodeTargets map[string]compatEpisodeTarget, total int) {
 	h.rememberListImages(listItems)
 	contentIDs := contentIDsFromListItems(listItems)
 	favorites, progress, err := resolveUserStateForContentIDs(r.Context(), session, h.userData, contentIDs)
@@ -1192,7 +1193,9 @@ func (h *ItemsHandler) writeCollectionItemsPage(w http.ResponseWriter, r *http.R
 		} else {
 			dto = h.mapper.itemFromList(item, favorites[item.ContentID], progress[item.ContentID], query.requestedFields)
 		}
-		dto.ParentID = routeID
+		if routeID != "" {
+			dto.ParentID = routeID
+		}
 		if target, ok := episodeTargets[item.ContentID]; ok {
 			h.applyCompatEpisodeTarget(&dto, target)
 		}
