@@ -3129,11 +3129,11 @@ func newChiRouter(deps Dependencies) chi.Router {
 	if deps.PluginHTTPProxy != nil {
 		v2deps.AuthProviderIconPublic = deps.PluginHTTPProxy.PublicGETRoute
 	}
-	pluginRouteAccess := newPluginAccessResolver(jwtService, sessionRepo, apiKeyRepo, userRepo, viewerResolver, actingAdmin)
+	pluginRouteAccess := newPluginAccessResolver(jwtService, sessionRepo, authService, apiKeyRepo, userRepo, viewerResolver, actingAdmin)
 	// Assets keep their JWT-only access: API keys never reached them. Their
 	// callers keep only authenticated and admin, so they never renew the
 	// launch cookie.
-	pluginAssetAccess := newPluginAccessResolver(jwtService, sessionRepo, nil, nil, viewerResolver, actingAdmin)
+	pluginAssetAccess := newPluginAccessResolver(jwtService, sessionRepo, nil, nil, nil, viewerResolver, actingAdmin)
 	pluginAssetAccess.noRenewal = true
 	v2deps.PluginContent = plugins.NewContentHandler(deps.PluginHTTPProxy, func(r *http.Request) plugins.ContentAccess {
 		resolved := pluginRouteAccess.resolve(r)
@@ -3199,7 +3199,7 @@ func newChiRouter(deps Dependencies) chi.Router {
 					return
 				}
 				resolved := pluginRouteAccess.resolve(r)
-				setRenewedCookie(w, renewedPluginCookie(r, resolved, "/api/v1"))
+				w = plugins.WithRenewedCookie(w, renewedPluginCookie(r, resolved, "/api/v1"))
 				ctx := plugins.WithPluginAccessUser(r.Context(), resolved.authenticated, resolved.admin, resolved.userID, resolved.profileID)
 				deps.PluginHTTPProxy.ServeRoute(w, r.WithContext(ctx), installationID, resolved.authenticated, resolved.admin)
 			})

@@ -918,7 +918,7 @@ The short-lived plugin access cookie is transport-specific because its current p
 a narrow common v2 plugin-content parent path, using `Secure` on HTTPS. The old-path cookie is
 expired on the applicable launch/logout transition where practical and otherwise dies five minutes
 after it was last issued or renewed; a page request through a cookie past half its lifetime renews
-it while the login session lasts ([plugin content](plugin-content.md)). It is never broadened to `/`.
+it while the login session could still refresh ([plugin content](plugin-content.md)). It is never broadened to `/`.
 
 ### Discovery and capability detection
 

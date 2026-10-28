@@ -44,6 +44,20 @@ func (pluginTestViewer) Resolve(_ context.Context, in access.ResolveInput) (acce
 	}
 }
 
+// pluginTestRenewer re-mints the token as auth.Service.RenewPluginAccess
+// does, unless the login session could no longer refresh.
+type pluginTestRenewer struct {
+	jwt     *auth.JWTService
+	refused bool
+}
+
+func (r pluginTestRenewer) RenewPluginAccess(_ context.Context, claims *auth.Claims, ttl time.Duration) (string, error) {
+	if r.refused {
+		return "", auth.ErrProviderUnavailable
+	}
+	return r.jwt.GeneratePluginAccessToken(claims.UserID, claims.Role, claims.SessionID, claims.ProfileID, claims.ProfilePINRevision, ttl)
+}
+
 // pluginTestActingAdmin allows admin powers only through "primary".
 func pluginTestActingAdmin(_ context.Context, in apimw.ActingAdminRequest) (bool, error) {
 	return in.ProfileID == "primary", nil
@@ -59,6 +73,9 @@ type pluginAccessCase struct {
 	headers     map[string]string
 	want        pluginAccess
 	wantRenewal bool
+	// sessionCannotRefresh makes the renewer refuse, as auth.Service does
+	// for a session token refresh would refuse.
+	sessionCannotRefresh bool
 }
 
 // pluginTestMinter returns the JWT service the cases sign with and a minter
@@ -86,7 +103,8 @@ func runPluginAccessCases(t *testing.T, jwt *auth.JWTService, cases []pluginAcce
 		t.Run(tc.name, func(t *testing.T) {
 			resolver := &pluginAccessResolver{
 				jwt: jwt, sessions: pluginTestSessions{role: tc.accountRole},
-				viewer: pluginTestViewer{}, actingAdmin: pluginTestActingAdmin,
+				renewer: pluginTestRenewer{jwt: jwt, refused: tc.sessionCannotRefresh},
+				viewer:  pluginTestViewer{}, actingAdmin: pluginTestActingAdmin,
 			}
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins/1/settings", nil)
 			if tc.cookie != "" {
@@ -185,6 +203,12 @@ func TestPluginAccessRenewal(t *testing.T) {
 			want: pluginAccess{authenticated: true, userID: 7, profileID: "kid"},
 		},
 		{
+			name: "a launch cookie whose session can no longer refresh is not renewed", accountRole: models.RoleUser,
+			cookie:               mint(models.RoleUser, "kid", handlers.PluginLaunchTTL/2-time.Second),
+			sessionCannotRefresh: true,
+			want:                 pluginAccess{authenticated: true, userID: 7, profileID: "kid"},
+		},
+		{
 			name: "a bearer token is never renewed", accountRole: models.RoleUser,
 			bearer: mint(models.RoleUser, "kid", handlers.PluginLaunchTTL/2-time.Second),
 			want:   pluginAccess{authenticated: true, userID: 7, profileID: "kid"},
@@ -192,29 +216,20 @@ func TestPluginAccessRenewal(t *testing.T) {
 	})
 }
 
-// A renewed launch token keeps the session and profile and gets a full
-// lifetime, so the page stays signed in as the same viewer.
-func TestPluginAccessRenewalKeepsTheViewer(t *testing.T) {
-	jwt := auth.NewJWTService("plugin-access-test-secret-0123456789", time.Hour, time.Hour)
-	old, err := jwt.GeneratePluginAccessToken(7, models.RoleUser, "session-1", "kid", new(int64(1)), time.Minute)
-	if err != nil {
-		t.Fatal(err)
+// A renewed launch token comes back as a cookie that replaces the launched
+// one: same name and path, HttpOnly, with a full lifetime.
+func TestPluginAccessRenewalSetsTheLaunchCookie(t *testing.T) {
+	jwt, mint := pluginTestMinter(t)
+	resolver := &pluginAccessResolver{
+		jwt: jwt, sessions: pluginTestSessions{role: models.RoleUser},
+		renewer: pluginTestRenewer{jwt: jwt}, viewer: pluginTestViewer{},
 	}
-	resolver := &pluginAccessResolver{jwt: jwt, sessions: pluginTestSessions{role: models.RoleUser}, viewer: pluginTestViewer{}}
 	req := httptest.NewRequest(http.MethodGet, "/api/v2/plugin-content/plugins/1/settings", nil)
-	req.AddCookie(&http.Cookie{Name: auth.PluginAccessCookieName, Value: old})
+	req.AddCookie(&http.Cookie{Name: auth.PluginAccessCookieName, Value: mint(models.RoleUser, "kid", time.Minute)})
 	cookie := renewedPluginCookie(req, resolver.resolve(req), "/api/v2/plugin-content")
-	if cookie == nil || cookie.Path != "/api/v2/plugin-content" || !cookie.HttpOnly || cookie.MaxAge != int(handlers.PluginLaunchTTL.Seconds()) {
+	if cookie == nil || cookie.Name != auth.PluginAccessCookieName || cookie.Path != "/api/v2/plugin-content" ||
+		!cookie.HttpOnly || cookie.MaxAge != int(handlers.PluginLaunchTTL.Seconds()) {
 		t.Fatalf("renewed cookie = %+v", cookie)
-	}
-	claims, err := jwt.ValidateToken(cookie.Value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if claims.SessionID != "session-1" || claims.ProfileID != "kid" || claims.TokenType != auth.TokenTypePluginAccess ||
-		claims.ProfilePINRevision == nil || *claims.ProfilePINRevision != 1 ||
-		time.Until(claims.ExpiresAt.Time) < handlers.PluginLaunchTTL-time.Minute {
-		t.Fatalf("renewed claims = %+v", claims)
 	}
 }
 
@@ -303,20 +318,5 @@ func TestPluginAccessNormalizesTheDeviceID(t *testing.T) {
 		if seen != want {
 			t.Fatalf("device id %q reached the decision as %q, want %q", header, seen, want)
 		}
-	}
-}
-
-// The v1 route attaches a renewed cookie with the no-store policy before the
-// proxy can answer, as the v2 content handler does.
-func TestSetRenewedCookieMarksTheResponseUncacheable(t *testing.T) {
-	rec := httptest.NewRecorder()
-	setRenewedCookie(rec, &http.Cookie{Name: auth.PluginAccessCookieName, Value: "renewed", Path: "/api/v1"})
-	if rec.Header().Get("Set-Cookie") == "" || rec.Header().Get("Cache-Control") != "private, no-store" {
-		t.Fatalf("headers = %v", rec.Header())
-	}
-	rec = httptest.NewRecorder()
-	setRenewedCookie(rec, nil)
-	if len(rec.Header()) != 0 {
-		t.Fatalf("no renewal set headers %v", rec.Header())
 	}
 }

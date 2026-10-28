@@ -220,12 +220,6 @@ func writePluginRouteResponse(w http.ResponseWriter, r *http.Request, installati
 	for key, value := range headers {
 		w.Header().Set(key, value)
 	}
-	// The host may have set a renewed launch cookie on this response. A
-	// plugin's own Cache-Control must not let a shared cache (a CDN in front
-	// of Silo) store one viewer's credential and replay it to another.
-	if len(w.Header().Values("Set-Cookie")) > 0 {
-		w.Header().Set("Cache-Control", "private, no-store")
-	}
 	// A plugin answers with its own Content-Type; the browser must not
 	// reinterpret the body as something else (script, HTML) on Silo's origin.
 	w.Header().Set("X-Content-Type-Options", "nosniff")

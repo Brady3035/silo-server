@@ -854,7 +854,7 @@ session, such as an API key, is refused with 403 `permission_denied`; an unknown
 declared profile is 404 and a PIN-locked one without its token is 403
 `profile_verification_required`. Repeating the request reissues an equivalent
 cookie. A page request through a cookie past half its lifetime gets a fresh one
-while the login session lasts ([plugin content](architecture/plugin-content.md)).
+while the login session could still refresh ([plugin content](architecture/plugin-content.md)).
 The bundled web client launches pages under
 `/api/v2/plugin-content/plugins/{installation_id}/`. The v2 launch does not expire
 the separate legacy cookie; that cookie expires five minutes after it was last

@@ -20,6 +20,10 @@ import (
 type pluginAccessResolver struct {
 	jwt      *auth.JWTService
 	sessions pluginSessionChecker
+	// renewer re-issues a launch cookie's token under the checks token
+	// refresh applies to the login session: auth.Service in production. Nil
+	// turns renewal off.
+	renewer pluginRenewer
 	// apiKeys and users enable sa_* API keys; nil leaves them out.
 	apiKeys pluginAPIKeys
 	users   pluginUsers
@@ -40,6 +44,11 @@ type pluginSessionChecker interface {
 	ActiveSession(ctx context.Context, sessionID string, userID int) (auth.SessionAuthority, bool, error)
 }
 
+// pluginRenewer is auth.Service's plugin token renewal.
+type pluginRenewer interface {
+	RenewPluginAccess(ctx context.Context, claims *auth.Claims, ttl time.Duration) (string, error)
+}
+
 // pluginAPIKeys and pluginUsers are the API-key lookups the resolver needs:
 // auth.APIKeyRepository and auth.UserRepository in production.
 type pluginAPIKeys interface {
@@ -54,13 +63,16 @@ type pluginUsers interface {
 // A nil repository leaves its field unset, so the resolver treats that
 // credential kind as unavailable rather than calling a nil repository.
 func newPluginAccessResolver(
-	jwt *auth.JWTService, sessions *auth.SessionRepository,
+	jwt *auth.JWTService, sessions *auth.SessionRepository, renewer *auth.Service,
 	apiKeys *auth.APIKeyRepository, users *auth.UserRepository,
 	viewer apimw.ViewerResolver, actingAdmin apimw.ActingAdminDecider,
 ) *pluginAccessResolver {
 	resolver := &pluginAccessResolver{jwt: jwt, viewer: viewer, actingAdmin: actingAdmin}
 	if sessions != nil {
 		resolver.sessions = sessions
+	}
+	if renewer != nil {
+		resolver.renewer = renewer
 	}
 	if apiKeys != nil && users != nil {
 		resolver.apiKeys, resolver.users = apiKeys, users
@@ -77,7 +89,7 @@ type pluginAccess struct {
 	profileID string
 	// renewedToken, when set, replaces the plugin launch cookie: the request
 	// came with a launch cookie past half its lifetime and its login session
-	// is still active.
+	// could still refresh.
 	renewedToken string
 }
 
@@ -136,10 +148,13 @@ func (p *pluginAccessResolver) resolve(r *http.Request) pluginAccess {
 		userID:        claims.UserID,
 		profileID:     profileID,
 	}
-	if !p.noRenewal && fromCookie && claims.TokenType == auth.TokenTypePluginAccess && claims.ExpiresAt != nil &&
+	if !p.noRenewal && p.renewer != nil && fromCookie && claims.TokenType == auth.TokenTypePluginAccess && claims.ExpiresAt != nil &&
 		time.Until(claims.ExpiresAt.Time) < handlers.PluginLaunchTTL-pluginRenewAfter &&
 		p.profileUnchanged(r, &current) {
-		if renewed, err := p.jwt.GeneratePluginAccessToken(claims.UserID, authority.Role, claims.SessionID, claims.ProfileID, claims.ProfilePINRevision, handlers.PluginLaunchTTL); err == nil {
+		// A session that could not refresh now (revoked, an impersonating
+		// admin demoted, a provider re-check refused or failing closed) is
+		// not renewed; the cookie runs out on its own.
+		if renewed, err := p.renewer.RenewPluginAccess(r.Context(), claims, handlers.PluginLaunchTTL); err == nil {
 			result.renewedToken = renewed
 		}
 	}
@@ -267,7 +282,8 @@ func pluginRequestToken(r *http.Request) (string, bool) {
 
 // renewedPluginCookie is the launch cookie that replaces the request's on
 // path, with the attributes the launch endpoints use, or nil when the
-// request's cookie needs no renewal. Callers set it with setRenewedCookie.
+// request's cookie needs no renewal. Callers set it with
+// plugins.WithRenewedCookie.
 func renewedPluginCookie(r *http.Request, access pluginAccess, path string) *http.Cookie {
 	if access.renewedToken == "" {
 		return nil
@@ -284,17 +300,4 @@ func renewedPluginCookie(r *http.Request, access pluginAccess, path string) *htt
 		SameSite: http.SameSiteLaxMode,
 		Secure:   handlers.IsSecureRequest(r),
 	}
-}
-
-// setRenewedCookie attaches a renewed launch cookie to w and marks the
-// response uncacheable before any handler writes it, so every response that
-// carries the credential, including static assets and early errors, keeps it
-// out of shared caches. The proxy re-applies the policy after copying a
-// plugin's own headers.
-func setRenewedCookie(w http.ResponseWriter, cookie *http.Cookie) {
-	if cookie == nil {
-		return
-	}
-	http.SetCookie(w, cookie)
-	w.Header().Set("Cache-Control", "private, no-store")
 }

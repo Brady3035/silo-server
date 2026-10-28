@@ -131,10 +131,11 @@ func TestHTTPProxyKeepsRenewedCookiesOutOfSharedCaches(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/plugins/1/page", nil)
 		req = req.WithContext(WithPluginAccessUser(req.Context(), true, false, 7, "profile-1"))
 		rec := httptest.NewRecorder()
+		var cookie *http.Cookie
 		if renewed {
-			http.SetCookie(rec, &http.Cookie{Name: "silo_plugin_access", Value: "renewed"})
+			cookie = &http.Cookie{Name: "silo_plugin_access", Value: "renewed"}
 		}
-		proxy.ServeRoute(rec, req, 1, true, false)
+		proxy.ServeRoute(WithRenewedCookie(rec, cookie), req, 1, true, false)
 		want := "public, max-age=600"
 		if renewed {
 			want = "private, no-store"
@@ -159,9 +160,9 @@ func (staticPageProxyService) HTTPRoutesClient(context.Context, int, string) (ht
 	return nil, errors.New("a static page makes no plugin call")
 }
 
-// A static plugin page is answered before any plugin call, so the response
-// that carries a renewed launch cookie is marked uncacheable when the cookie
-// is attached, not only after the plugin's headers are copied.
+// A static plugin page is answered by http.ServeFile before any plugin call,
+// and ServeFile's error responses drop Cache-Control. A response that carries
+// a renewed launch cookie stays uncacheable either way.
 func TestContentHandlerKeepsRenewedCookiesOnStaticPagesOutOfSharedCaches(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "index.html")
 	if err := os.WriteFile(file, []byte("<p>page</p>"), 0o600); err != nil {
@@ -174,12 +175,26 @@ func TestContentHandlerKeepsRenewedCookiesOnStaticPagesOutOfSharedCaches(t *test
 			RenewedCookie: &http.Cookie{Name: "silo_plugin_access", Value: "renewed", Path: ContentPrefix},
 		}
 	}, nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, ContentPrefix+"/plugins/1/page", nil))
-	if rec.Code != http.StatusOK || rec.Header().Get("Set-Cookie") == "" {
-		t.Fatalf("status = %d, Set-Cookie = %q", rec.Code, rec.Header().Get("Set-Cookie"))
-	}
-	if got := rec.Header().Get("Cache-Control"); got != "private, no-store" {
-		t.Fatalf("Cache-Control = %q, want private, no-store", got)
+	for _, tc := range []struct {
+		name, rangeHeader string
+		wantStatus        int
+	}{
+		{"the page", "", http.StatusOK},
+		{"an unsatisfiable range", "bytes=999999-", http.StatusRequestedRangeNotSatisfiable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, ContentPrefix+"/plugins/1/page", nil)
+			if tc.rangeHeader != "" {
+				req.Header.Set("Range", tc.rangeHeader)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus || rec.Header().Get("Set-Cookie") == "" {
+				t.Fatalf("status = %d, Set-Cookie = %q", rec.Code, rec.Header().Get("Set-Cookie"))
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "private, no-store" {
+				t.Fatalf("Cache-Control = %q, want private, no-store", got)
+			}
+		})
 	}
 }
