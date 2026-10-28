@@ -32,11 +32,61 @@ func TestBuildRemuxArgsDropsLeadingPicturesOnlyForSeekedVideo(t *testing.T) {
 		{name: "DV7 strip alone at zero", seek: 0, drop: true, dvProfile: 7, want: DV7ToHDR10BitstreamFilter},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			args := buildRemuxArgsWithLeadingPictureDropV3("/x.mkv", "mp4", test.seek, false, -1, test.dvProfile, false, test.audioOnly, 0, 0, 0, test.drop, "")
+			args := buildRemuxArgsWithLeadingPictureDropV3("/x.mkv", "mp4", test.seek, false, -1, test.dvProfile, false, test.audioOnly, 0, 0, 0, test.drop, "", nil)
 			if got := remuxVideoBitstreamFilterArg(args); got != test.want {
 				t.Fatalf("-bsf:v = %q, want %q (args=%s)", got, test.want, strings.Join(args, " "))
 			}
 		})
+	}
+}
+
+func TestBuildRemuxArgsTakesPrimedVideoFromConcatList(t *testing.T) {
+	primer := &remuxIDRPrimer{firstPTS: 0, anchorPTS: 86.67, anchorSeconds: 86.67}
+	for _, test := range []struct {
+		name   string
+		primer *remuxIDRPrimer
+		inputs []string
+		maps   []string
+	}{
+		{name: "plain seeked copy", inputs: []string{"/x.mkv"}, maps: []string{"0:V:0", "0:a:0?"}},
+		{name: "primed copy", primer: primer, inputs: []string{"pipe:0", "/x.mkv"}, maps: []string{"0:V:0", "1:a:0?"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := buildRemuxArgsWithLeadingPictureDropV3("/x.mkv", "mp4", 88.213, true, -1, 0, false, false, 0, 0, 0, true, "", test.primer)
+			var inputs, maps []string
+			for i := 0; i+1 < len(args); i++ {
+				switch args[i] {
+				case "-i":
+					inputs = append(inputs, args[i+1])
+				case "-map":
+					maps = append(maps, args[i+1])
+				}
+			}
+			if strings.Join(inputs, " ") != strings.Join(test.inputs, " ") || strings.Join(maps, " ") != strings.Join(test.maps, " ") {
+				t.Fatalf("inputs %v maps %v, want %v %v (args=%s)", inputs, maps, test.inputs, test.maps, strings.Join(args, " "))
+			}
+			if got := remuxVideoBitstreamFilterArg(args); got != ResumeLeadingPictureDropBitstreamFilter {
+				t.Fatalf("-bsf:v = %q, want the leading-picture drop", got)
+			}
+			joined := strings.Join(args, " ")
+			if test.primer != nil && !strings.Contains(joined, "-f concat -safe 0 -protocol_whitelist file,pipe -i pipe:0") {
+				t.Fatalf("concat input missing: %s", joined)
+			}
+			// The seeked input starts at the request, 1.543 s past the keyframe the concat clock starts on.
+			if hasOffset := strings.Contains(joined, "-itsoffset 1.543000 -i /x.mkv"); hasOffset != (test.primer != nil) {
+				t.Fatalf("-itsoffset present = %v, want %v: %s", hasOffset, test.primer != nil, joined)
+			}
+		})
+	}
+}
+
+func TestRemuxIDRPrimerConcatListQuotesThePath(t *testing.T) {
+	primer := &remuxIDRPrimer{firstPTS: 0.042, anchorPTS: 86.67}
+	want := "ffconcat version 1.0\n" +
+		"file 'file:/tv/Bob'\\''s Burgers.mkv'\ninpoint 0.042000\noutpoint 0.043000\n" +
+		"file 'file:/tv/Bob'\\''s Burgers.mkv'\ninpoint 86.670000\n"
+	if got := primer.concatList("/tv/Bob's Burgers.mkv"); got != want {
+		t.Fatalf("concat list =\n%s\nwant\n%s", got, want)
 	}
 }
 

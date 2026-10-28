@@ -98,42 +98,62 @@ func resolveCopySeekAnchor(
 	requestedSeekSeconds float64,
 	segmentDuration int,
 ) (float64, int, error) {
+	anchor, err := firstCopiedVideoPacketSeconds(ctx, ffmpegPath, inputPath, requestedSeekSeconds, true)
+	if err != nil {
+		return 0, 0, fmt.Errorf("resolve copy seek anchor: %w", err)
+	}
+	anchor = math.Max(0, anchor)
+	return anchor, int(anchor / float64(segmentDuration)), nil
+}
 
-	cmd := fspath.CommandContext(ctx, ffmpegPath,
+// firstCopiedVideoPacketSeconds returns the presentation time of the first
+// video packet a remux copy seeked to seekSeconds emits (no seek at zero).
+// startAtZero reports it relative to the source start, as the transport's
+// timeline uses it; without it the time is the raw input PTS, as FFmpeg's
+// concat demuxer addresses the file.
+func firstCopiedVideoPacketSeconds(ctx context.Context, ffmpegPath, inputPath string, seekSeconds float64, startAtZero bool) (float64, error) {
+	args := []string{
 		"-v", "error",
 		"-fflags", "+genpts+fastseek",
 		"-analyzeduration", "3000000",
 		"-probesize", "5000000",
-		"-ss", fmt.Sprintf("%.3f", requestedSeekSeconds),
+	}
+	if seekSeconds > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%.3f", seekSeconds))
+	}
+	args = append(args,
 		"-i", inputPath,
 		// Match the remux transport's 0:V:0 map. Uppercase V excludes attached
 		// pictures, thumbnails, and cover art from the video stream ordinal.
 		"-map", "0:V:0",
 		"-c:v", "copy",
 		"-copyts",
-		"-start_at_zero",
+	)
+	if startAtZero {
+		args = append(args, "-start_at_zero")
+	}
+	args = append(args,
 		"-avoid_negative_ts", "disabled",
 		"-frames:v", "1",
 		"-f", "framecrc",
 		"-",
 	)
+	cmd := fspath.CommandContext(ctx, ffmpegPath, args...)
 	var stdout bytes.Buffer
 	stderr := newBoundedTailBuffer(stderrTailMaxBytes)
 	cmd.Stdout = &stdout
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		if tail := truncateStderr(stderr.String()); tail != "" {
-			return 0, 0, fmt.Errorf("resolve copy seek anchor: ffmpeg failed: %w (stderr: %s)", err, tail)
+			return 0, fmt.Errorf("ffmpeg failed: %w (stderr: %s)", err, tail)
 		}
-		return 0, 0, fmt.Errorf("resolve copy seek anchor: ffmpeg failed: %w", err)
+		return 0, fmt.Errorf("ffmpeg failed: %w", err)
 	}
-
-	anchor, ok := firstFramecrcTimestamp(stdout.Bytes())
+	seconds, ok := firstFramecrcTimestamp(stdout.Bytes())
 	if !ok {
-		return 0, 0, errors.New("resolve copy seek anchor: ffmpeg returned no video packet timestamp")
+		return 0, errors.New("ffmpeg returned no video packet timestamp")
 	}
-	anchor = math.Max(0, anchor)
-	return anchor, int(anchor / float64(segmentDuration)), nil
+	return seconds, nil
 }
 
 // firstFramecrcTimestamp returns the presentation time, in seconds, of the
