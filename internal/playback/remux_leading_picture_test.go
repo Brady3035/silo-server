@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +132,8 @@ func TestPrimedRemuxStartsOnTheSourceIDRThenTheSeekKeyframe(t *testing.T) {
 		want []int // the first two slices' NAL unit types
 	}{
 		{name: "past the first GOP", seek: 5, want: []int{idrNLP, cra}},
+		// Matroska answers an exact keyframe seek with the keyframe before it (#839).
+		{name: "requested on a keyframe", seek: 6, want: []int{idrNLP, cra}},
 		{name: "inside the first GOP", seek: 1, want: []int{idrNLP, 1}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -164,6 +167,19 @@ func TestPrimedRemuxStartsOnTheSourceIDRThenTheSeekKeyframe(t *testing.T) {
 			}
 			if decode := run(t, "-v", "error", "-i", output, "-f", "null", "-"); bytes.Contains(decode, []byte("[hevc @")) {
 				t.Fatalf("decoding the primed stream failed:\n%s", decode)
+			}
+			if test.want[1] != cra {
+				return
+			}
+			// The picture after the primer is the keyframe the plan's timeline starts at.
+			anchor, _, err := ResolveCopySeekAnchor(ctx, ffmpeg, source, test.seek, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := run(t, "-v", "error", "-i", output, "-map", "0:v", "-vf", `select=eq(n\,1)`, "-frames:v", "1", "-f", "md5", "-")
+			want := run(t, "-v", "error", "-ss", strconv.FormatFloat(anchor, 'f', 6, 64), "-i", source, "-map", "0:V:0", "-frames:v", "1", "-f", "md5", "-")
+			if !bytes.Equal(got, want) {
+				t.Fatalf("frame after the primer = %s, want the source frame at the %gs anchor = %s", got, anchor, want)
 			}
 		})
 	}

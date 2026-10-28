@@ -25,11 +25,6 @@ var (
 	copySeekProbeSlots = make(chan struct{}, maxConcurrentCopySeekProbes)
 )
 
-type copySeekAnchor struct {
-	seconds float64
-	segment int
-}
-
 // ResolveCopySeekAnchor returns the keyframe timestamp FFmpeg's input seek will
 // actually use for a copy-video restart. FFmpeg cannot discard the pre-roll
 // between that keyframe and requestedSeekSeconds while preserving -c:v copy,
@@ -66,6 +61,32 @@ func ResolveCopySeekAnchor(
 		strconv.FormatFloat(requestedSeekSeconds, 'f', 6, 64),
 		strconv.Itoa(segmentDuration),
 	}, "\x00")
+	anchor, err := runCopySeekProbe(ctx, key, func(probeCtx context.Context) (float64, error) {
+		seconds, err := firstCopiedVideoPacketSeconds(probeCtx, resolvedFFmpegPath, inputPath, requestedSeekSeconds, true)
+		if err != nil {
+			return 0, fmt.Errorf("resolve copy seek anchor: %w", err)
+		}
+		return math.Max(0, seconds), nil
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return anchor, int(anchor / float64(segmentDuration)), nil
+}
+
+// rawCopiedVideoPacketSeconds is firstCopiedVideoPacketSeconds' raw input
+// PTS, scheduled like ResolveCopySeekAnchor.
+func rawCopiedVideoPacketSeconds(ctx context.Context, ffmpegPath, inputPath string, seekSeconds float64) (float64, error) {
+	resolvedFFmpegPath := ResolveFFmpegPath(ffmpegPath)
+	key := strings.Join([]string{"raw", resolvedFFmpegPath, inputPath, strconv.FormatFloat(seekSeconds, 'f', 6, 64)}, "\x00")
+	return runCopySeekProbe(ctx, key, func(probeCtx context.Context) (float64, error) {
+		return firstCopiedVideoPacketSeconds(probeCtx, resolvedFFmpegPath, inputPath, seekSeconds, false)
+	})
+}
+
+// runCopySeekProbe runs probe once for concurrent callers that share key, at
+// most maxConcurrentCopySeekProbes at a time and within copySeekProbeTimeout.
+func runCopySeekProbe(ctx context.Context, key string, probe func(context.Context) (float64, error)) (float64, error) {
 	resultCh := copySeekProbeGroup.DoChan(key, func() (any, error) {
 		probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), copySeekProbeTimeout)
 		defer cancel()
@@ -73,37 +94,20 @@ func ResolveCopySeekAnchor(
 		case copySeekProbeSlots <- struct{}{}:
 			defer func() { <-copySeekProbeSlots }()
 		case <-probeCtx.Done():
-			return copySeekAnchor{}, probeCtx.Err()
+			return 0.0, probeCtx.Err()
 		}
-		seconds, segment, err := resolveCopySeekAnchor(probeCtx, resolvedFFmpegPath, inputPath, requestedSeekSeconds, segmentDuration)
-		return copySeekAnchor{seconds: seconds, segment: segment}, err
+		return probe(probeCtx)
 	})
 
 	select {
 	case <-ctx.Done():
-		return 0, 0, ctx.Err()
+		return 0, ctx.Err()
 	case result := <-resultCh:
 		if result.Err != nil {
-			return 0, 0, result.Err
+			return 0, result.Err
 		}
-		anchor := result.Val.(copySeekAnchor) //nolint:errcheck,forcetypeassert // copySeekProbeGroup's only DoChan closure returns a copySeekAnchor
-		return anchor.seconds, anchor.segment, nil
+		return result.Val.(float64), nil //nolint:errcheck,forcetypeassert // every runCopySeekProbe closure returns a float64
 	}
-}
-
-func resolveCopySeekAnchor(
-	ctx context.Context,
-	ffmpegPath string,
-	inputPath string,
-	requestedSeekSeconds float64,
-	segmentDuration int,
-) (float64, int, error) {
-	anchor, err := firstCopiedVideoPacketSeconds(ctx, ffmpegPath, inputPath, requestedSeekSeconds, true)
-	if err != nil {
-		return 0, 0, fmt.Errorf("resolve copy seek anchor: %w", err)
-	}
-	anchor = math.Max(0, anchor)
-	return anchor, int(anchor / float64(segmentDuration)), nil
 }
 
 // firstCopiedVideoPacketSeconds returns the presentation time of the first

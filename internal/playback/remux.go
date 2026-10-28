@@ -236,19 +236,18 @@ type remuxIDRPrimer struct {
 // resolveRemuxIDRPrimer probes the timestamps for a primer, or returns nil so
 // the remux serves the plain seeked copy.
 func resolveRemuxIDRPrimer(ctx context.Context, bin, filePath string, seekSeconds float64) *remuxIDRPrimer {
-	// One concat directive per line, so a path with a line break can't be listed.
-	if strings.ContainsAny(fspath.Decode(filePath), "\r\n") {
+	// One concat directive per line, and FFmpeg's script parser stops at a NUL,
+	// so a path holding either can't be listed.
+	if strings.ContainsAny(fspath.Decode(filePath), "\r\n\x00") {
 		return nil
 	}
 	anchorSeconds, _, err := ResolveCopySeekAnchor(ctx, bin, filePath, seekSeconds, 0)
-	probeCtx, cancel := context.WithTimeout(ctx, copySeekProbeTimeout)
-	defer cancel()
 	var firstPTS, anchorPTS float64
 	if err == nil {
-		firstPTS, err = firstCopiedVideoPacketSeconds(probeCtx, bin, filePath, 0, false)
+		firstPTS, err = rawCopiedVideoPacketSeconds(ctx, bin, filePath, 0)
 	}
 	if err == nil {
-		anchorPTS, err = firstCopiedVideoPacketSeconds(probeCtx, bin, filePath, seekSeconds, false)
+		anchorPTS, err = rawCopiedVideoPacketSeconds(ctx, bin, filePath, seekSeconds)
 	}
 	if err != nil {
 		slog.WarnContext(ctx, "remux IDR primer unavailable; serving the seeked copy without it", "error", err)
