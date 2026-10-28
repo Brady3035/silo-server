@@ -1596,6 +1596,14 @@ func (h *PlaybackHandler) HandleStartPlayback(w http.ResponseWriter, r *http.Req
 	h.handleStartPlaybackV3(w, r, body)
 }
 
+// ownsPlaybackSession reports whether the authenticated account and acting
+// profile own session. Profiles on one account share a user ID, so checking
+// the account alone would let a sibling profile move or stop another
+// profile's playback and write its watch history.
+func ownsPlaybackSession(ctx context.Context, session *playback.Session) bool {
+	return session.UserID == apimw.GetUserID(ctx) && session.ProfileID == apimw.GetProfileID(ctx)
+}
+
 // HandleUpdateProgress handles POST /playback/{session_id}/progress.
 func (h *PlaybackHandler) HandleUpdateProgress(w http.ResponseWriter, r *http.Request) {
 	userID := apimw.GetUserID(r.Context())
@@ -1619,7 +1627,7 @@ func (h *PlaybackHandler) HandleUpdateProgress(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load playback session")
 		return
 	}
-	if session.UserID != userID {
+	if !ownsPlaybackSession(r.Context(), session) {
 		writeError(w, http.StatusForbidden, "forbidden", "Session belongs to another user")
 		return
 	}
@@ -1689,7 +1697,7 @@ func (h *PlaybackHandler) HandleStopPlayback(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load playback session")
 		return
 	}
-	if session.UserID != userID {
+	if !ownsPlaybackSession(r.Context(), session) {
 		writeError(w, http.StatusForbidden, "forbidden", "Session belongs to another user")
 		return
 	}
@@ -1886,11 +1894,16 @@ func (h *PlaybackHandler) HandleGetTranscodeManifest(w http.ResponseWriter, r *h
 	h.touchSessionActivity(sessionID)
 
 	manifest, err := transcodeSession.BuildPlaybackManifest("segment/", r.URL.RawQuery)
+	if errors.Is(err, playback.ErrManifestQueryTooLong) {
+		writeError(w, http.StatusBadRequest, "bad_request", "Playlist request query is too long")
+		return
+	}
 	if err != nil {
 		slog.ErrorContext(r.Context(), "build transcode manifest", "component", "api", "error", err, "session", sessionID, "playback_session_id", sessionID)
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "Transcode manifest not ready")
 		return
 	}
+	playback.WarnIfPlaylistOversized(r.Context(), "api", sessionID, manifest)
 
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	// no-transform keeps proxies and CDNs from re-encoding the playlist,
@@ -2213,7 +2226,9 @@ func (h *PlaybackHandler) relayToTranscodeNode(w http.ResponseWriter, r *http.Re
 	stToken := r.URL.Query().Get("st")
 	// Strip the signed stream token ("st") before forwarding/logging: it is a
 	// 24h bearer reconstruction descriptor exposing media path + recipe claims.
-	// Other query params are preserved.
+	// Other query params are preserved, including an account "token" the node
+	// echoes into segment URIs for players that cannot send headers, so log
+	// targetURL only through logredact.
 	query := r.URL.Query()
 	query.Del("st")
 	if encoded := query.Encode(); encoded != "" {
@@ -2244,11 +2259,13 @@ func (h *PlaybackHandler) relayToTranscodeNode(w http.ResponseWriter, r *http.Re
 	// the same verified token can be re-injected into the node's manifest segment
 	// URIs below.
 	var validToken string
+	var validClaims *streamtoken.Claims
 	if stToken != "" && h.JWTSecret != "" {
 		claims, verifyErr := streamtoken.Verify(stToken, h.JWTSecret)
 		if verifyErr == nil && claims.SessionID == sessionID {
 			req.Header.Set("X-Silo-Stream-Token", stToken)
 			validToken = stToken
+			validClaims = claims
 		} else if verifyErr != nil {
 			slog.WarnContext(r.Context(), "stream token not forwarded to transcode node", "component", "api", "error", verifyErr, "playback_session_id", sessionID)
 		}
@@ -2261,26 +2278,42 @@ func (h *PlaybackHandler) relayToTranscodeNode(w http.ResponseWriter, r *http.Re
 			slog.WarnContext(r.Context(), "transcode node unreachable from the relay", "component", "api", "error", logredact.SanitizeText(err.Error()), "url", logredact.SanitizeURL(targetURL), "playback_session_id", sessionID)
 			return fmt.Errorf("%w: %w", errTranscodeNodeUnreachable, err)
 		}
-		slog.ErrorContext(r.Context(), "proxy to transcode node", "component", "api", "error", err, "url", targetURL, "playback_session_id", sessionID)
+		slog.ErrorContext(r.Context(), "proxy to transcode node", "component", "api", "error", logredact.SanitizeURLError(err), "url", logredact.SanitizeURL(targetURL), "playback_session_id", sessionID)
 		writeTranscodeNodeUnavailable(w)
 		return nil
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if isRedirectStatus(resp.StatusCode) && refusesRelayRedirects(r.Context()) {
+		// The Location is not logged: it may carry a signed token.
+		slog.WarnContext(r.Context(), "transcode node answered a redirect; not relayed", "component", "api", "status", resp.StatusCode, "playback_session_id", sessionID)
+		writeTranscodeNodeUnavailable(w)
+		return nil
+	}
 
 	// The node strips "st" from the request query (kept out of node URLs/logs),
 	// so the segment/init URIs in the manifest it builds carry no token. Without
 	// it, a segment fetched after a node or API restart cannot reconstruct the
 	// session and 404s. Re-inject the client-facing token into every URI at this
 	// boundary so the client's later segment requests carry "st" again. Only the
-	// manifest body is rewritten; segments stream through untouched.
+	// manifest body is rewritten; segments stream through untouched. For a
+	// client that negotiated hls_variable_substitution_v1, a long title's
+	// playlist carries the token once (EXT-X-DEFINE) instead of on every segment
+	// URI, which would put it over the 4 MiB some players accept.
 	if validToken != "" && resp.StatusCode == http.StatusOK && strings.HasSuffix(path, ".m3u8") {
 		body, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
-			slog.ErrorContext(r.Context(), "read transcode node manifest", "component", "api", "error", readErr, "url", targetURL, "playback_session_id", sessionID)
+			slog.ErrorContext(r.Context(), "read transcode node manifest", "component", "api", "error", readErr, "url", logredact.SanitizeURL(targetURL), "playback_session_id", sessionID)
 			writeTranscodeNodeUnavailable(w)
 			return nil
 		}
-		rewritten := playback.AppendManifestQueryParam(body, streamTokenParam, validToken)
+		var rewritten []byte
+		if validClaims.HLSVariableSubstitution {
+			rewritten = playback.AppendManifestQueryParamWithSubstitution(body, streamTokenParam, validToken)
+		} else {
+			rewritten = playback.AppendManifestQueryParam(body, streamTokenParam, validToken)
+		}
+		playback.WarnIfPlaylistOversized(r.Context(), "api", sessionID, rewritten)
 		for k, vv := range resp.Header {
 			if http.CanonicalHeaderKey(k) == "Content-Length" {
 				continue

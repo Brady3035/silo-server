@@ -34,7 +34,7 @@ type pluginAccessResolver struct {
 // pluginSessionChecker is the session lookup the resolver needs:
 // auth.SessionRepository in production.
 type pluginSessionChecker interface {
-	ActiveSession(ctx context.Context, id string) (auth.SessionAuthority, bool, error)
+	ActiveSession(ctx context.Context, sessionID string, userID int) (auth.SessionAuthority, bool, error)
 }
 
 // pluginAPIKeys and pluginUsers are the API-key lookups the resolver needs:
@@ -108,7 +108,7 @@ func (p *pluginAccessResolver) resolve(r *http.Request) pluginAccess {
 	// account's current role rather than the token's.
 	// A remote-playback handoff only plays on its device; plugins are not
 	// part of that.
-	authority, active, err := p.sessions.ActiveSession(r.Context(), claims.SessionID)
+	authority, active, err := p.sessions.ActiveSession(r.Context(), claims.SessionID, claims.UserID)
 	if err != nil || !active || authority.IsRemotePlayback() {
 		return pluginAccess{}
 	}

@@ -17,7 +17,7 @@ import (
 
 type pluginTestSessions struct{ role string }
 
-func (s pluginTestSessions) ActiveSession(_ context.Context, id string) (auth.SessionAuthority, bool, error) {
+func (s pluginTestSessions) ActiveSession(_ context.Context, id string, _ int) (auth.SessionAuthority, bool, error) {
 	if id != "session-1" {
 		return auth.SessionAuthority{}, false, nil
 	}

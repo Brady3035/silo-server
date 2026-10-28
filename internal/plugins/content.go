@@ -83,7 +83,7 @@ func (h *ContentHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "private, no-store")
 		}
 		ctx := WithPluginAccessUser(r.Context(), access.Authenticated, access.Admin, access.UserID, access.ProfileID)
-		h.proxy.ServeRoute(w, r.WithContext(ctx), installationID, access.Authenticated, access.Admin)
+		h.proxy.serveRoute(w, r.WithContext(ctx), installationID, access.Authenticated, access.Admin, true)
 		return
 	}
 	if r.Method != http.MethodGet {
