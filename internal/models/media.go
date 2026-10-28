@@ -770,7 +770,8 @@ type MediaItem struct {
 
 // EpisodeParentArtwork is an episode's season poster and its series' poster
 // and backdrop, so an episode card can draw a hero from series artwork rather
-// than the episode still. Seasons store no backdrop.
+// than the episode still. Section cards also carry the season backdrop, which
+// v2 Continue Watching and Next Up cards show before the series backdrop.
 type EpisodeParentArtwork struct {
 	SeriesPosterPath        string
 	SeriesPosterThumbhash   string
@@ -778,6 +779,8 @@ type EpisodeParentArtwork struct {
 	SeriesBackdropThumbhash string
 	SeasonPosterPath        string
 	SeasonPosterThumbhash   string
+	SeasonBackdropPath      string
+	SeasonBackdropThumbhash string
 }
 
 // ItemBackdrop is one backdrop after an item's primary, a media_item_backdrops
@@ -818,6 +821,11 @@ type Season struct {
 	UpdatedAt               time.Time
 	// MachineTranslatedFields is transient; see MediaItem.
 	MachineTranslatedFields []string `json:"-"`
+	// BackdropPath is the season's landscape art. Only an admin pick sets
+	// it; metadata refresh leaves it alone.
+	BackdropPath       string
+	BackdropSourcePath string
+	BackdropThumbhash  string
 }
 
 // Episode represents a row in the episodes table.

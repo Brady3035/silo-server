@@ -52,7 +52,8 @@ func NewSeasonRepository(pool *pgxpool.Pool) *SeasonRepository {
 const seasonColumns = `content_id, series_id, season_number, title, default_metadata_language, overview,
 	air_date, poster_path, poster_source_path, poster_thumbhash,
 	metadata_s3_path, metadata_etag, metadata_source,
-	created_at, updated_at`
+	created_at, updated_at,
+	backdrop_path, backdrop_source_path, backdrop_thumbhash`
 
 // scanSeason scans a single row into a *models.Season.
 func scanSeason(row pgx.Row) (*models.Season, error) {
@@ -73,6 +74,9 @@ func scanSeason(row pgx.Row) (*models.Season, error) {
 		&s.MetadataSource,
 		&s.CreatedAt,
 		&s.UpdatedAt,
+		&s.BackdropPath,
+		&s.BackdropSourcePath,
+		&s.BackdropThumbhash,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -104,6 +108,9 @@ func scanSeasons(rows pgx.Rows) ([]*models.Season, error) {
 			&s.MetadataSource,
 			&s.CreatedAt,
 			&s.UpdatedAt,
+			&s.BackdropPath,
+			&s.BackdropSourcePath,
+			&s.BackdropThumbhash,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scanning season row: %w", err)
@@ -431,16 +438,22 @@ func (r *SeasonRepository) UpdateMetadata(ctx context.Context, contentID string,
 	return nil
 }
 
-func (r *SeasonRepository) UpdateArtworkIfSourceMatches(ctx context.Context, contentID, sourcePath, cachedPath, thumbhash string) (bool, error) {
-	tag, err := r.pool.Exec(ctx, `
+// UpdateArtworkIfSourceMatches stores the cached copy of a season's poster or
+// backdrop, named by imageType, while the row still points at sourcePath.
+func (r *SeasonRepository) UpdateArtworkIfSourceMatches(ctx context.Context, contentID, imageType, sourcePath, cachedPath, thumbhash string) (bool, error) {
+	// The image type names the column family: poster_* or backdrop_*.
+	if imageType != artworkImagePoster && imageType != artworkImageBackdrop {
+		return false, fmt.Errorf("updating season cached artwork: seasons do not hold %q images", imageType)
+	}
+	tag, err := r.pool.Exec(ctx, fmt.Sprintf(`
 		UPDATE seasons
-		SET poster_path = $3,
-			poster_source_path = $2,
-			poster_thumbhash = $4,
+		SET %[1]s_path = $3,
+			%[1]s_source_path = $2,
+			%[1]s_thumbhash = $4,
 			updated_at = NOW()
 		WHERE content_id = $1
-		  AND poster_source_path = $2
-	`, contentID, sourcePath, cachedPath, thumbhash)
+		  AND %[1]s_source_path = $2
+	`, imageType), contentID, sourcePath, cachedPath, thumbhash)
 	if err != nil {
 		return false, fmt.Errorf("updating season cached artwork: %w", err)
 	}

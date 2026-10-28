@@ -1766,7 +1766,8 @@ func fixtureCases() []fixtureCase {
 	cases = append(cases, notificationSeriesMuteFixtureCases()...)
 	cases = append(cases, seasonalThemeFixtureCases()...)
 	cases = append(cases, personalListMembershipFixtureCases()...)
-	return append(cases, sectionItemLimitFixtureCases()...)
+	cases = append(cases, sectionItemLimitFixtureCases()...)
+	return append(cases, adminCatalogItemsFixtureCases()...)
 }
 
 // sectionItemLimitFixtureCases pin the item_limit bound of the aggregate
@@ -2210,6 +2211,7 @@ func fixtureDeps() Dependencies {
 	deps.SubtitleReads = &fakeSubtitleReads{}
 	deps.AdminSubtitleList = &fakeAdminSubtitleList{}
 	deps.AdminPlaybackHistory = &fakeAdminPlaybackHistory{}
+	deps.AdminCatalogItems = &fakeAdminCatalogItems{}
 	deps.AdminSubtitleMetadata = fixtureAdminSubtitleMetadata()
 	deps.AdminSubtitleProviderConfiguration = fixtureAdminProviderConfiguration()
 	deps.SubtitleAICancel = &fakeSubtitleAICancel{}

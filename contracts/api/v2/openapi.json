@@ -3269,6 +3269,51 @@
         ],
         "type": "object"
       },
+      "AdminCatalogCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed": {
+            "description": "Whether the current principal may use the capability",
+            "type": "boolean"
+          },
+          "item_change_events": {
+            "description": "catalog.item.changed on the v2 events socket also carries change added, removed and files_changed to administrators",
+            "type": "boolean"
+          },
+          "item_listing": {
+            "description": "listAdminCatalogItems is served",
+            "type": "boolean"
+          },
+          "item_listing_max_content_ids": {
+            "description": "Most content_ids one listAdminCatalogItems request accepts",
+            "format": "int64",
+            "type": "integer"
+          },
+          "revision": {
+            "description": "Opaque revision of this document",
+            "type": "string"
+          },
+          "state": {
+            "description": "Support and configuration state, not health",
+            "enum": [
+              "available",
+              "disabled",
+              "not_configured",
+              "unsupported"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_listing",
+          "item_listing_max_content_ids",
+          "item_change_events",
+          "revision",
+          "state",
+          "allowed"
+        ],
+        "type": "object"
+      },
       "AdminCatalogExportRequest": {
         "additionalProperties": false,
         "properties": {
@@ -3319,6 +3364,215 @@
         "required": [
           "conflict_mode",
           "path_rewrites"
+        ],
+        "type": "object"
+      },
+      "AdminCatalogItem": {
+        "additionalProperties": false,
+        "properties": {
+          "added_at": {
+            "description": "When Silo first saw the item: the earliest first-seen time across its libraries, or its first-seen time in library_id when that filter is set. Not a change cursor; metadata and file changes do not move it",
+            "format": "date-time",
+            "pattern": "^(?:[1-9][0-9]{3}|0[1-9][0-9]{2}|00[1-9][0-9]|000[2-9])-",
+            "patternDescription": "a non-zero RFC 3339 instant",
+            "type": "string"
+          },
+          "content_id": {
+            "examples": [
+              "movie-tmdb-949"
+            ],
+            "type": "string"
+          },
+          "episode_number": {
+            "description": "An episode's number in its season; absent otherwise",
+            "format": "int64",
+            "type": "integer"
+          },
+          "imdb_id": {
+            "type": "string"
+          },
+          "library_ids": {
+            "description": "Every enabled library the item is present in, whatever library_id filters",
+            "items": {
+              "description": "Opaque identifier",
+              "examples": [
+                "1"
+              ],
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "season_number": {
+            "description": "An episode's season; absent otherwise",
+            "format": "int64",
+            "type": "integer"
+          },
+          "series_id": {
+            "description": "An episode's series content_id; absent otherwise",
+            "type": "string"
+          },
+          "series_title": {
+            "description": "An episode's series title; absent otherwise",
+            "type": "string"
+          },
+          "status": {
+            "description": "Metadata match state of a movie or series; absent for an episode",
+            "examples": [
+              "matched"
+            ],
+            "type": "string"
+          },
+          "title": {
+            "description": "Episode title for an episode; empty when the episode has none",
+            "type": "string"
+          },
+          "tmdb_id": {
+            "type": "string"
+          },
+          "tvdb_id": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "movie",
+              "series",
+              "episode"
+            ],
+            "type": "string"
+          },
+          "versions": {
+            "description": "Each present file in an enabled library, ordered by file_id. Empty for a series, never null",
+            "items": {
+              "$ref": "#/components/schemas/AdminCatalogItemVersion"
+            },
+            "type": "array"
+          },
+          "year": {
+            "description": "Release year; an episode's air-date year. Absent when unknown",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "content_id",
+          "type",
+          "title",
+          "library_ids",
+          "added_at",
+          "versions"
+        ],
+        "type": "object"
+      },
+      "AdminCatalogItemCollection": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "description": "The page's items; empty, never null",
+            "items": {
+              "$ref": "#/components/schemas/AdminCatalogItem"
+            },
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageInfo",
+            "description": "Cursor state; absent for bounded unpaginated collections"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "AdminCatalogItemVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "atmos": {
+            "description": "The selected audio track carries Dolby Atmos",
+            "type": "boolean"
+          },
+          "audio_channels": {
+            "examples": [
+              8
+            ],
+            "format": "int64",
+            "type": "integer"
+          },
+          "bitrate_kbps": {
+            "description": "Overall file bitrate in kilobits per second",
+            "format": "int64",
+            "type": "integer"
+          },
+          "codec_audio": {
+            "examples": [
+              "truehd"
+            ],
+            "type": "string"
+          },
+          "codec_video": {
+            "examples": [
+              "hevc"
+            ],
+            "type": "string"
+          },
+          "container": {
+            "examples": [
+              "mkv"
+            ],
+            "type": "string"
+          },
+          "dynamic_range": {
+            "description": "Absent when the file was not probed",
+            "enum": [
+              "sdr",
+              "hdr10",
+              "hdr10_plus",
+              "hlg",
+              "dolby_vision",
+              "hdr_unknown"
+            ],
+            "type": "string"
+          },
+          "edition": {
+            "description": "Edition label, such as Director's Cut",
+            "examples": [
+              "Extended"
+            ],
+            "type": "string"
+          },
+          "file_id": {
+            "description": "Opaque identifier",
+            "examples": [
+              "120"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "file_size": {
+            "description": "Bytes",
+            "format": "int64",
+            "type": "integer"
+          },
+          "library_id": {
+            "description": "Opaque identifier",
+            "examples": [
+              "1"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "resolution": {
+            "examples": [
+              "2160p"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "library_id",
+          "atmos",
+          "file_size"
         ],
         "type": "object"
       },
@@ -9113,7 +9367,7 @@
             "type": "string"
           },
           "type": {
-            "description": "The slot the image fills. Seasons take poster only.",
+            "description": "The slot the image fills. Seasons take poster or backdrop.",
             "enum": [
               "poster",
               "backdrop",
@@ -12453,6 +12707,10 @@
             "description": "The list accepts ended_before",
             "type": "boolean"
           },
+          "lifecycle_seq": {
+            "description": "Entries carry lifecycle_seq",
+            "type": "boolean"
+          },
           "revision": {
             "description": "Opaque revision of this document",
             "type": "string"
@@ -12486,6 +12744,7 @@
           "stream_decisions",
           "end_reason",
           "end_reason_values",
+          "lifecycle_seq",
           "revision",
           "state",
           "allowed"
@@ -12575,12 +12834,13 @@
             ]
           },
           "end_reason": {
-            "description": "Why the attempt ended: stopped by the viewer's client, terminated by an administrator, expired after the client went quiet, or aborted by the server. Null when unknown, which includes every attempt recorded before it existed and a server teardown the client never recovered from",
+            "description": "Why the attempt ended: stopped by the viewer's client, terminated by an administrator, expired after the client went quiet, aborted by the server, or replaced by a new session for the same play (a Jellyfin client switched play method). Null when unknown, which includes every attempt recorded before it existed and a server teardown the client never recovered from",
             "enum": [
               "stopped",
               "terminated",
               "expired",
               "aborted",
+              "replaced",
               null
             ],
             "type": [
@@ -12597,6 +12857,14 @@
           },
           "episode_number": {
             "description": "Episode number; null when not an episode",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lifecycle_seq": {
+            "description": "Sequence number of the end this row records on the sessions channel: higher than every earlier number for the session, so the row supersedes any live row or session.* event with a lower one. Null on rows recorded before lifecycle numbers existed",
             "format": "int64",
             "type": [
               "integer",
@@ -12767,7 +13035,8 @@
           "client_version",
           "video_decision",
           "audio_decision",
-          "end_reason"
+          "end_reason",
+          "lifecycle_seq"
         ],
         "type": "object"
       },
@@ -12937,6 +13206,11 @@
           },
           "is_paused": {
             "type": "boolean"
+          },
+          "lifecycle_seq": {
+            "description": "Sequence number of the session's last lifecycle transition (start, pause, resume) on the sessions channel. A row and a session.* event with the same number carry the same is_paused; the higher number is the newer. Absent for a session that started before the server recorded lifecycle transitions.",
+            "format": "int64",
+            "type": "integer"
           },
           "media_file_id": {
             "description": "Opaque identifier",
@@ -13215,6 +13489,10 @@
           "is_jellyfin_client": {
             "type": "boolean"
           },
+          "lifecycle_events": {
+            "description": "The admin sessions channel carries session.started, session.paused, session.resumed and session.stopped, and rows may carry lifecycle_seq",
+            "type": "boolean"
+          },
           "network_access_route": {
             "type": "boolean"
           },
@@ -13291,6 +13569,7 @@
           "output_format",
           "source_video_height",
           "device_identity",
+          "lifecycle_events",
           "revision",
           "state",
           "allowed"
@@ -33207,7 +33486,7 @@
             "type": "string"
           },
           "episode_parent_artwork": {
-            "description": "Episode cards may carry series_poster_url, series_backdrop_url and season_poster_url with their thumbhashes, sized by the poster and backdrop slots, on Home and library sections (including Continue Watching and Next Up), catalog browse and search, Watch Tonight, and episode detail (getCatalogItem). Seasons store no backdrop, so there is no season backdrop",
+            "description": "Episode cards may carry series_poster_url, series_backdrop_url and season_poster_url with their thumbhashes, sized by the poster and backdrop slots, on Home and library sections (including Continue Watching and Next Up), catalog browse and search, Watch Tonight, and episode detail (getCatalogItem). There is no season backdrop field; in Continue Watching and Next Up rows an episode card's backdrop_url is the season backdrop, else the series backdrop, else the episode still",
             "type": "boolean"
           },
           "episode_still_provenance": {
@@ -51350,12 +51629,34 @@
       "WatchMarker": {
         "additionalProperties": false,
         "properties": {
+          "algorithm": {
+            "type": "string"
+          },
+          "confidence": {
+            "format": "double",
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
           "end_seconds": {
             "examples": [
               90
             ],
             "format": "double",
             "type": "number"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "scanner",
+              "online",
+              "plugin",
+              "s3",
+              "manual"
+            ],
+            "type": "string"
           },
           "start_seconds": {
             "examples": [
@@ -64660,6 +64961,205 @@
         "x-silo-service-backed": true
       }
     },
+    "/api/v2/admin/catalog/capabilities": {
+      "get": {
+        "operationId": "getAdminCatalogCapabilities",
+        "parameters": [
+          {
+            "description": "Optional first precondition, evaluated before If-None-Match: a tag that does not match the current representation is 412 precondition_failed.",
+            "in": "header",
+            "name": "If-Match",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional. When present, it must name the authenticated account's primary profile; an absent header is accepted.",
+            "in": "header",
+            "name": "X-Profile-Id",
+            "schema": {
+              "examples": [
+                "1"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Verification proof for a PIN-locked profile, issued by POST /api/v2/profiles/{id}/verify-pin; required only when the declared profile is locked",
+            "in": "header",
+            "name": "X-Profile-Token",
+            "schema": {
+              "examples": [
+                "pvt_5f3a9c1e7b2d4e8fa0c6"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminCatalogCapabilities"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "The strong, opaque validator of the representation; send it back in If-Match on a guarded mutation or If-None-Match on a conditional read.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The representation named by If-None-Match is current; no body.",
+            "headers": {
+              "ETag": {
+                "description": "The strong, opaque validator of the representation; send it back in If-Match on a guarded mutation or If-None-Match on a conditional read.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Acceptable"
+          },
+          "412": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Precondition Failed",
+            "headers": {
+              "ETag": {
+                "description": "The strong, opaque validator of the representation; send it back in If-Match on a guarded mutation or If-None-Match on a conditional read.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Discover the administrator catalog reads this server offers.",
+        "tags": [
+          "admin-catalog"
+        ],
+        "x-silo-class": "acting_admin",
+        "x-silo-conditional": true
+      }
+    },
     "/api/v2/admin/catalog/export": {
       "post": {
         "operationId": "exportAdminCatalog",
@@ -65776,6 +66276,235 @@
           }
         ],
         "summary": "List a bounded page of catalog import sources. Local sources use path order; storage sources use the storage continuation order.",
+        "tags": [
+          "admin-catalog"
+        ],
+        "x-silo-class": "acting_admin",
+        "x-silo-service-backed": true
+      }
+    },
+    "/api/v2/admin/catalog/items": {
+      "get": {
+        "operationId": "listAdminCatalogItems",
+        "parameters": [
+          {
+            "description": "Optional. When present, it must name the authenticated account's primary profile; an absent header is accepted.",
+            "in": "header",
+            "name": "X-Profile-Id",
+            "schema": {
+              "examples": [
+                "1"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Verification proof for a PIN-locked profile, issued by POST /api/v2/profiles/{id}/verify-pin; required only when the declared profile is locked",
+            "in": "header",
+            "name": "X-Profile-Token",
+            "schema": {
+              "examples": [
+                "pvt_5f3a9c1e7b2d4e8fa0c6"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size; default 50, maximum 200",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "description": "Page size; default 50, maximum 200",
+              "examples": [
+                50
+              ],
+              "format": "int64",
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from page.next_cursor; valid only with the filters that produced it",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "Opaque cursor from page.next_cursor; valid only with the filters that produced it",
+              "maxLength": 8192,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only items present in this library; added_at and added_after then use the item's first-seen time in this library",
+            "explode": false,
+            "in": "query",
+            "name": "library_id",
+            "schema": {
+              "description": "Only items present in this library; added_at and added_after then use the item's first-seen time in this library",
+              "examples": [
+                "1"
+              ],
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only items of this type",
+            "explode": false,
+            "in": "query",
+            "name": "type",
+            "schema": {
+              "description": "Only items of this type",
+              "enum": [
+                "movie",
+                "series",
+                "episode"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only items whose added_at is at or after this instant",
+            "explode": false,
+            "in": "query",
+            "name": "added_after",
+            "schema": {
+              "description": "Only items whose added_at is at or after this instant",
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only these items, one content_ids parameter per id; ids that are not present movies, series or episodes are left out",
+            "explode": true,
+            "in": "query",
+            "name": "content_ids",
+            "schema": {
+              "description": "Only these items, one content_ids parameter per id; ids that are not present movies, series or episodes are left out",
+              "examples": [
+                [
+                  "movie-tmdb-949"
+                ]
+              ],
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 200,
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminCatalogItemCollection"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "406": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Acceptable"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List the movies, series and episodes present in enabled libraries, with their files, in content_id order. Each page is one consistent read; later pages read the live catalog.",
         "tags": [
           "admin-catalog"
         ],
@@ -69880,6 +70609,16 @@
             },
             "description": "Not Acceptable"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "412": {
             "content": {
               "application/problem+json": {
@@ -70894,6 +71633,16 @@
             },
             "description": "Not Acceptable"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/problem+json": {
@@ -71070,6 +71819,16 @@
               }
             },
             "description": "Not Acceptable"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -71269,6 +72028,16 @@
               }
             },
             "description": "Request Timeout"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "412": {
             "content": {
@@ -71484,6 +72253,16 @@
             },
             "description": "Not Acceptable"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/problem+json": {
@@ -71666,6 +72445,16 @@
               }
             },
             "description": "Request Timeout"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "413": {
             "content": {
@@ -78472,6 +79261,16 @@
             },
             "description": "Not Acceptable"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "412": {
             "content": {
               "application/problem+json": {
@@ -79480,6 +80279,16 @@
             },
             "description": "Request Timeout"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "413": {
             "content": {
               "application/problem+json": {
@@ -80317,6 +81126,16 @@
             },
             "description": "Request Timeout"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "413": {
             "content": {
               "application/problem+json": {
@@ -81104,6 +81923,16 @@
               }
             },
             "description": "Not Acceptable"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -86585,6 +87414,16 @@
               }
             },
             "description": "Not Acceptable"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -102739,6 +103578,16 @@
             },
             "description": "Not Acceptable"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/problem+json": {
@@ -102910,6 +103759,16 @@
               }
             },
             "description": "Request Timeout"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "413": {
             "content": {
@@ -107851,6 +108710,16 @@
             },
             "description": "Not Acceptable"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/problem+json": {
@@ -107994,6 +108863,16 @@
               }
             },
             "description": "Not Acceptable"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -108139,6 +109018,16 @@
             },
             "description": "Not Acceptable"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/problem+json": {
@@ -108282,6 +109171,16 @@
               }
             },
             "description": "Not Acceptable"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -125589,6 +126488,16 @@
             },
             "description": "Not Acceptable"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "422": {
             "content": {
               "application/problem+json": {
@@ -126060,6 +126969,16 @@
               }
             },
             "description": "Not Acceptable"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -127124,6 +128043,16 @@
             },
             "description": "Request Timeout"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
           "413": {
             "content": {
               "application/problem+json": {
@@ -127173,6 +128102,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Implemented"
           },
           "503": {
             "content": {
@@ -129788,6 +130727,16 @@
               }
             },
             "description": "Not Acceptable"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
           },
           "422": {
             "content": {
@@ -132869,6 +133818,16 @@
             },
             "description": "Unauthorized"
           },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
           "406": {
             "content": {
               "application/problem+json": {
@@ -134624,6 +135583,16 @@
             },
             "description": "Unprocessable Entity"
           },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -135050,6 +136019,16 @@
             },
             "description": "Unprocessable Entity"
           },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -135163,6 +136142,16 @@
               }
             },
             "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
           },
           "500": {
             "content": {
@@ -137525,6 +138514,16 @@
             },
             "description": "Unprocessable Entity"
           },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
           "500": {
             "content": {
               "application/problem+json": {
@@ -137729,6 +138728,16 @@
               }
             },
             "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
           },
           "500": {
             "content": {
@@ -138004,6 +139013,16 @@
               }
             },
             "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
           },
           "500": {
             "content": {
@@ -140619,6 +141638,16 @@
             },
             "description": "Internal Server Error"
           },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Implemented"
+          },
           "503": {
             "content": {
               "application/problem+json": {
@@ -140954,6 +141983,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Implemented"
           },
           "503": {
             "content": {
@@ -144046,6 +145085,16 @@
             },
             "description": "Internal Server Error"
           },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Implemented"
+          },
           "503": {
             "content": {
               "application/problem+json": {
@@ -144843,6 +145892,16 @@
             },
             "description": "Internal Server Error"
           },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Implemented"
+          },
           "503": {
             "content": {
               "application/problem+json": {
@@ -145043,6 +146102,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Implemented"
           },
           "503": {
             "content": {
@@ -165061,7 +166130,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Delegate the current login session for one realtime handshake.",
+        "summary": "Delegate the current login session, or an admin:monitor:read API key, for one realtime handshake.",
         "tags": [
           "realtime"
         ],
@@ -203968,11 +205037,11 @@
             }
           },
           {
-            "description": "The client family whose profile_client values take part; required when a requested key has that scope",
+            "description": "The client family whose profile_client values take part; optional, and absence skips the profile_client layer",
             "in": "header",
             "name": "X-Silo-Client-Family",
             "schema": {
-              "description": "The client family whose profile_client values take part; required when a requested key has that scope",
+              "description": "The client family whose profile_client values take part; optional, and absence skips the profile_client layer",
               "enum": [
                 "tv",
                 "mobile",
@@ -204167,11 +205236,11 @@
             }
           },
           {
-            "description": "The client family whose profile_client values take part; required when a requested key has that scope",
+            "description": "The client family whose profile_client values take part; optional, and absence skips the profile_client layer",
             "in": "header",
             "name": "X-Silo-Client-Family",
             "schema": {
-              "description": "The client family whose profile_client values take part; required when a requested key has that scope",
+              "description": "The client family whose profile_client values take part; optional, and absence skips the profile_client layer",
               "enum": [
                 "tv",
                 "mobile",

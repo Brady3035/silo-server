@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"log/slog"
@@ -181,11 +182,14 @@ type Dependencies struct {
 	NodeCapabilityInvalidator func(nodeURL string)
 	ResourceSampler           *nodemetrics.Sampler           // this host's own resource sampler (may be nil)
 	SessionSyncer             handlers.PlaybackSessionSyncer // optional; immediate playback session sync trigger
-	EventBus                  cache.EventBus
-	AdminStatsProvider        handlers.AdminStatsSource
-	Recommender               recommendations.Recommender // nil when disabled
-	RecWorker                 *recommendations.Worker     // nil when disabled
-	CatalogSearchVectorizer   catalog.CatalogSearchQueryVectorizer
+	// LiveSessionRowJSON renders a session as the live row a sync would
+	// store for it, so a session.started event can carry it before a sync.
+	LiveSessionRowJSON      func(*playback.Session) (json.RawMessage, error)
+	EventBus                cache.EventBus
+	AdminStatsProvider      handlers.AdminStatsSource
+	Recommender             recommendations.Recommender // nil when disabled
+	RecWorker               *recommendations.Worker     // nil when disabled
+	CatalogSearchVectorizer catalog.CatalogSearchQueryVectorizer
 	// CatalogSearchSettings is the process-lifetime startup snapshot shared by
 	// every native/jellycompat provider and the index maintenance worker.
 	CatalogSearchSettings *catalog.CatalogSearchSettings
@@ -1424,6 +1428,8 @@ func newChiRouter(deps Dependencies) chi.Router {
 		}
 		playbackHandler.AdminStore = playbackAdminStore
 		playbackHandler.EventsHub = deps.EventsHub
+		playbackHandler.LifecycleEncoder = apiv2.PlaybackLifecycleEncoder{}
+		playbackHandler.LiveRowJSON = deps.LiveSessionRowJSON
 		if deps.FileRepo != nil {
 			playbackHandler.MissingMarker = deps.FileRepo
 		}
@@ -1437,6 +1443,7 @@ func newChiRouter(deps Dependencies) chi.Router {
 			streamHandler.TM = playbackHandler.TranscodeManager()
 			streamHandler.StreamDeny = playbackHandler.StreamDeny
 			streamHandler.PlanStoreV3 = playbackHandler.PlanStoreV3
+			streamHandler.FinishOtherEnd = playbackHandler.FinishOtherEnd
 			if deps.Config != nil {
 				streamHandler.JWTSecret = deps.Config.Auth.JWTSecret
 			}
@@ -2524,7 +2531,7 @@ func newChiRouter(deps Dependencies) chi.Router {
 		v2deps.ScanControls = libraryHandler
 	}
 	if deps.OpsLogRepo != nil && deps.ActivityLogRepo != nil && deps.LogStreamHub != nil && sessionRepo != nil && userRepo != nil {
-		socket := handlers.NewAdminLogsSocketV2(handlers.NewAdminLogsHandler(deps.OpsLogRepo, deps.ActivityLogRepo, deps.LogStreamHub), evt.NewSocketTicketStore(deps.RedisClient), sessionRepo, userRepo, viewerResolver, actingAdmin, deps.PublicURL)
+		socket := handlers.NewAdminLogsSocketV2(handlers.NewAdminLogsHandler(deps.OpsLogRepo, deps.ActivityLogRepo, deps.LogStreamHub), evt.NewSocketTicketStore(deps.RedisClient, evt.SocketAudienceAdminLogs), sessionRepo, userRepo, viewerResolver, actingAdmin, deps.PublicURL)
 		v2deps.AdminLogsSocket = socket
 		if deps.OnConfigChange != nil {
 			deps.OnConfigChange(func(_, updated *config.Config) { socket.SetPublicOrigin(updated.Server.PublicURL) })
@@ -2728,6 +2735,10 @@ func newChiRouter(deps Dependencies) chi.Router {
 			v2deps.AdminWatchSummary = adminHandler
 		}
 		v2deps.AdminPlaybackSessions = adminHandler
+		if playbackHandler != nil && deps.DB != nil {
+			playbackHandler.LifecycleViews = adminHandler
+			v2deps.PlaybackLifecycleEvents = deps.EventsHub != nil
+		}
 		if deps.DB != nil && deps.ArtifactManager != nil {
 			v2deps.AdminDownloadPreparations = downloads.NewPreparationReader(deps.DB, profileNamesByUser(deps.UserStoreProvider))
 			v2deps.AdminDownloadPreparationControls = deps.ArtifactManager
@@ -2794,7 +2805,11 @@ func newChiRouter(deps Dependencies) chi.Router {
 		events.SetNotificationsSystem(deps.Notifications)
 		v2deps.EventsCapability = events
 		if sessionRepo != nil && userRepo != nil {
-			socket := handlers.NewEventsSocketV2(events, evt.NewSocketTicketStore(deps.RedisClient), sessionRepo, userRepo, viewerResolver, actingAdmin, deps.PublicURL)
+			var socketKeys handlers.SocketAPIKeys
+			if apiKeyRepo != nil {
+				socketKeys = apiKeyRepo
+			}
+			socket := handlers.NewEventsSocketV2(events, evt.NewSocketTicketStore(deps.RedisClient, evt.SocketAudienceEvents), sessionRepo, userRepo, viewerResolver, actingAdmin, socketKeys, deps.PublicURL)
 			v2deps.EventsSocket = socket
 			if deps.OnConfigChange != nil {
 				deps.OnConfigChange(func(_, updated *config.Config) { socket.SetPublicOrigin(updated.Server.PublicURL) })
@@ -2938,6 +2953,9 @@ func newChiRouter(deps Dependencies) chi.Router {
 	v2deps.AdminItemMetadata = adminHandler
 	if adminHandler != nil {
 		v2deps.AdminUnmatchedFiles = adminHandler
+	}
+	if itemRepo != nil {
+		v2deps.AdminCatalogItems = itemRepo
 	}
 	if adminImageHandler != nil {
 		v2deps.AdminCatalogImages = adminImageHandler
@@ -4823,6 +4841,9 @@ func newChiRouter(deps Dependencies) chi.Router {
 	if nodeHandler != nil {
 		nodeHandler.StartConfigurationReconciliation(deps.AppContext)
 	}
+	// The sweep ends sessions through the handler's fields, so it starts
+	// once every route above has finished wiring them.
+	playbackHandler.StartLifecycleSweep(deps.AppContext, deps.DB)
 	return r
 }
 
