@@ -63,6 +63,8 @@ type FeatureStatus struct {
 	// and request_4k on the title detail.
 	Requests4KSupported bool `json:"requests_4k_supported" doc:"Whether the server takes 4K requests: is_4k on createRequest and on requests, and request_4k on the title detail"`
 	Requests4KAllowed   bool `json:"requests_4k_allowed" doc:"Whether the viewer may make 4K requests now: their account may, and a download server takes 4K for movies or for series. request_4k on the title detail says which"`
+	// DiscoverRowsSupported advertises the admin-defined Discover layout.
+	DiscoverRowsSupported bool `json:"discover_rows_supported" doc:"Whether the Discover page follows an admin-defined layout: listDiscoverSections may hold rows beyond the six built-in ones, in any order, and lists every row in row_order; getDiscoverRow pages any title row."`
 }
 type RequestFeatureStatusOutput struct {
 	Status       int
@@ -229,7 +231,7 @@ func registerRequestLifecycle(reg *Registry, requests RequestLifecycleService, p
 				return nil, requestProblem(err)
 			}
 		}
-		return &RequestFeatureStatusOutput{Body: FeatureStatus{Capability: Capability{State: enabledCapabilityState(status.RequestsEnabled), Allowed: &allowed}, RequestsEnabled: status.RequestsEnabled, RatingRestrictionsEnforced: status.RatingRestrictionsEnforced, FollowSupported: true, SeasonRequestsSupported: true, MissingSeasonsRequestable: status.MissingSeasonsRequestable, DownloadProgressSupported: true,
+		return &RequestFeatureStatusOutput{Body: FeatureStatus{Capability: Capability{State: enabledCapabilityState(status.RequestsEnabled), Allowed: &allowed}, RequestsEnabled: status.RequestsEnabled, RatingRestrictionsEnforced: status.RatingRestrictionsEnforced, FollowSupported: true, SeasonRequestsSupported: true, MissingSeasonsRequestable: status.MissingSeasonsRequestable, DownloadProgressSupported: true, DiscoverRowsSupported: true,
 			WatchlistTitlesSupported: status.RequestsEnabled && reg.deps.WatchlistTitles != nil && reg.deps.WatchlistRequests != nil, WatchlistRequests: status.WatchlistRequests && allowed, Requests4KSupported: true, Requests4KAllowed: status.UHDRequestsAllowed && allowed}}, nil
 	})
 	Register(reg, op(http.MethodPost, "/requests/{id}/cancel", "cancelRequest", "Cancel an accessible request."), func(ctx context.Context, in *RequestCancelInput) (*MediaRequestOutput, error) {

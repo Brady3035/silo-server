@@ -72,6 +72,7 @@ import (
 	"github.com/Silo-Server/silo-server/internal/ratingsources"
 	"github.com/Silo-Server/silo-server/internal/recommendations"
 	mediarequests "github.com/Silo-Server/silo-server/internal/requests"
+	"github.com/Silo-Server/silo-server/internal/requests/discoverrows"
 	"github.com/Silo-Server/silo-server/internal/s3client"
 	"github.com/Silo-Server/silo-server/internal/scanner"
 	"github.com/Silo-Server/silo-server/internal/scanqueue"
@@ -316,6 +317,11 @@ type Dependencies struct {
 	// that case rather than failing.
 	MDBListClient *mdblist.Client
 
+	// TMDB is the process's one TMDB client, built in main.go: request
+	// discovery, the collection sources, and their syncs share its response
+	// caches and its request budget. Nil builds one for this router.
+	TMDB *tmdb.Client
+
 	// Admin dashboard aggregates, cached like AdminStatsProvider. Each is
 	// optional: without one, the matching route queries Postgres per request.
 	AdminPlaybackActivityProvider handlers.AdminPlaybackActivitySource
@@ -439,6 +445,14 @@ func NewRouter(deps Dependencies) http.Handler {
 func newChiRouter(deps Dependencies) chi.Router {
 	declareNativeMediaRoutes()
 	r := chi.NewRouter()
+
+	if deps.TMDB == nil {
+		tmdbAPIKey := ""
+		if deps.Config != nil {
+			tmdbAPIKey = deps.Config.TMDBAPIKey
+		}
+		deps.TMDB = tmdb.NewClient(tmdbAPIKey, tmdb.RequestsPerSecond)
+	}
 
 	useBaseMiddleware(r, deps)
 	if overlay := deps.overlayOrigins(); overlay != nil {
@@ -1006,15 +1020,10 @@ func newChiRouter(deps Dependencies) chi.Router {
 				ebookReaderHandler.Conversion = conv
 			}
 		}
-		tmdbAPIKey := ""
-		if deps.Config != nil {
-			tmdbAPIKey = deps.Config.TMDBAPIKey
-		}
-		requestsTMDB := tmdb.NewClient(tmdbAPIKey, 40)
 		// deps.UserStoreProvider is the notification-wrapped provider, so a
 		// promoted series queues an interest recompute. The promotion effects
 		// are the personal data handler, wired once it exists.
-		watchlistTitles = watchlist.NewTitles(deps.DB, itemRepo, deps.UserStoreProvider, requestsTMDB, nil)
+		watchlistTitles = watchlist.NewTitles(deps.DB, itemRepo, deps.UserStoreProvider, deps.TMDB, nil)
 
 		catalogResourceHandler = handlers.NewCatalogResourceHandler(itemsHandler)
 		catalogResourceHandler.SetWatchlistPromoter(watchlistTitles)
@@ -1031,10 +1040,12 @@ func newChiRouter(deps Dependencies) chi.Router {
 		requestsRepo := mediarequests.NewRepository(deps.DB, deps.SecretCipher)
 		requestSvc := mediarequests.NewService(
 			requestsRepo,
-			requestsTMDB,
+			deps.TMDB,
 			mediarequests.NewCatalogPresence(itemRepo, providerIDRepo),
 		)
 		requestSvc.SetTitleObserver(watchlistTitles)
+		discoverLists := discoverrows.NewSnapshotRepository(deps.DB)
+		requestSvc.SetDiscoverLists(discoverLists, discoverrows.NewRefresher(requestsRepo, discoverLists, deps.TMDB))
 		watchlistRequestWithdrawer = requestSvc
 		requestSvc.SetWatchlistPreference(mediarequests.StoreWatchlistPreference{Stores: deps.UserStoreProvider})
 		AttachRequestRouter(requestSvc, deps.PluginService)
@@ -1683,6 +1694,9 @@ func newChiRouter(deps Dependencies) chi.Router {
 		adminHandler.RestartStatus = restartStatus
 		adminHandler.CatalogSearchStatus = catalogSearchService
 		adminHandler.DiagnosticsStore = diagnosticsStore
+		if profileHandler != nil {
+			adminHandler.ProfileAvatars = profileHandler
+		}
 		if watchlistTitles != nil && deps.DB != nil {
 			adminHandler.WatchlistTitlesSweeper = watchlistTitles
 		}
@@ -1752,6 +1766,7 @@ func newChiRouter(deps Dependencies) chi.Router {
 			&handlers.PoolFolderLookup{Pool: deps.DB},
 			deps.MetadataService,
 		)
+		adminMatchHandler.EventBus = deps.EventBus
 	}
 
 	// Build admin split/merge handler for repairing wrong version groupings.
@@ -1788,6 +1803,7 @@ func newChiRouter(deps Dependencies) chi.Router {
 			detailSvc,
 		)
 		adminImageHandler.EventsHub = deps.EventsHub
+		adminImageHandler.EventBus = deps.EventBus
 	}
 
 	var adminIntroHandler *handlers.AdminIntroHandler
@@ -2106,40 +2122,16 @@ func newChiRouter(deps Dependencies) chi.Router {
 			)
 		}
 		if libraryCollectionService.TMDBCollections == nil {
-			apiKey := ""
-			if deps.Config != nil {
-				apiKey = deps.Config.TMDBAPIKey
-			}
-			libraryCollectionService.TMDBCollections = &tmdbCollectionAdapter{
-				client: tmdb.NewClient(apiKey, 40),
-			}
+			libraryCollectionService.TMDBCollections = &tmdbCollectionAdapter{client: deps.TMDB}
 		}
 		if libraryCollectionService.TMDBFranchises == nil {
-			apiKey := ""
-			if deps.Config != nil {
-				apiKey = deps.Config.TMDBAPIKey
-			}
-			libraryCollectionService.TMDBFranchises = &tmdbFranchiseAdapter{
-				client: tmdb.NewClient(apiKey, 40),
-			}
+			libraryCollectionService.TMDBFranchises = &tmdbFranchiseAdapter{client: deps.TMDB}
 		}
 		if libraryCollectionService.TMDBDiscovers == nil {
-			apiKey := ""
-			if deps.Config != nil {
-				apiKey = deps.Config.TMDBAPIKey
-			}
-			libraryCollectionService.TMDBDiscovers = &tmdbDiscoverAdapter{
-				client: tmdb.NewClient(apiKey, 40),
-			}
+			libraryCollectionService.TMDBDiscovers = &tmdbDiscoverAdapter{client: deps.TMDB}
 		}
 		if libraryCollectionService.TMDBLists == nil {
-			apiKey := ""
-			if deps.Config != nil {
-				apiKey = deps.Config.TMDBAPIKey
-			}
-			libraryCollectionService.TMDBLists = &tmdbListAdapter{
-				client: tmdb.NewClient(apiKey, 40),
-			}
+			libraryCollectionService.TMDBLists = &tmdbListAdapter{client: deps.TMDB}
 		}
 		// Propagate the now-wired TMDB fetchers to the user-side sync service
 		// (constructed earlier in main.go before settingsRepo existed, so its
@@ -2756,6 +2748,7 @@ func newChiRouter(deps Dependencies) chi.Router {
 		v2deps.AdminSettingsInspection = adminHandler
 		v2deps.AdminSettingsWrite = adminHandler
 		v2deps.AdminSettingsChecks = adminHandler
+		v2deps.AdminAIProviders = adminHandler
 		adminHandler.ChatGPT = chatGPT
 	}
 	if chatGPT != nil {
@@ -5038,19 +5031,17 @@ func resolveOptionalPluginAccessUser(
 	// account's current role rather than the token's.
 	// A remote-playback handoff only plays on its device; plugins are not
 	// part of that.
-	authority, active, err := sessionRepo.ActiveSession(r.Context(), claims.SessionID)
+	authority, active, err := sessionRepo.ActiveSession(r.Context(), claims.SessionID, claims.UserID)
 	if err != nil || !active || authority.IsRemotePlayback() {
 		return false, false, 0, ""
 	}
 	return true, authority.Role == "admin", claims.UserID, claims.ProfileID
 }
 
-// NewTMDBCollectionFetcher creates a TMDBCollectionFetcher from an API key.
+// NewTMDBCollectionFetcher adapts client to a TMDBCollectionFetcher.
 // Exported so main.go can construct it for the collection sync scheduler.
-func NewTMDBCollectionFetcher(apiKey string) catalog.TMDBCollectionFetcher {
-	return &tmdbCollectionAdapter{
-		client: tmdb.NewClient(apiKey, 40),
-	}
+func NewTMDBCollectionFetcher(client *tmdb.Client) catalog.TMDBCollectionFetcher {
+	return &tmdbCollectionAdapter{client: client}
 }
 
 // tmdbCollectionAdapter adapts the tmdb.Client to the catalog.TMDBCollectionFetcher interface.
@@ -5276,7 +5267,8 @@ func llmConfigFromServer(cfg *config.Config) llm.Config {
 // effectiveSubtitleAIConfig derives the subtitle AI service config from the server config.
 func effectiveSubtitleAIConfig(cfg *config.Config) subtitleai.Config {
 	return subtitleai.Config{
-		Configured:            cfg.AI.BaseURL != "",
+		Configured:            cfg.AI.BaseURL != "" || cfg.AI.AuthMode == llm.AuthModeChatGPT,
+		SpeechConfigured:      cfg.AI.ASRBaseURL != "",
 		TranslateEnabled:      cfg.SubtitleAI.Enabled,
 		TranscribeEnabled:     cfg.SubtitleAI.TranscribeEnabled,
 		ChatModel:             cfg.AI.ChatModel,
@@ -5316,7 +5308,7 @@ func (r scopeEntitlementResolver) resolveScope(ctx context.Context, userID int, 
 func metadataAIConfigFromServer(cfg *config.Config) metadatatranslation.Config {
 	return metadatatranslation.Config{
 		Enabled:    cfg.MetadataAI.Enabled,
-		Configured: cfg.AI.BaseURL != "",
+		Configured: cfg.AI.BaseURL != "" || cfg.AI.AuthMode == llm.AuthModeChatGPT,
 		ChatModel:  cfg.AI.ChatModel,
 		OnView:     cfg.MetadataAI.OnView,
 	}

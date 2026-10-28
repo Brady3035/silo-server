@@ -15,6 +15,10 @@
 ./internal/recommendations TestRecentCompletedItemIDsGroupsSeriesBeforeLimit
 ./internal/sections TestCompatibilityRecentlyAddedReturnsFlatDistinctSeries
 ./internal/sections TestSectionsSkipItemsInNoLibraryPostgres
+./internal/sections TestEpisodeCardsCarryParentArtworkPostgres
+./internal/catalog TestCatalogQueryWithoutLibraryLeavesOutItemsInNoLibraryDB
+./internal/catalog TestSearchLeavesOutItemsInNoLibraryPostgres
+./internal/api/handlers TestUnmatchedItemsLeaveOutItemsInNoLibraryDB
 ./internal/scanner TestFileRepositoryPreservesFirstSeenScanProvenance
 ./internal/scanner TestMatroskaTrackBackfillRecordsTrackNumbers
 ./internal/scanner TestMatroskaTrackBackfillStopsOnStalledStorage
@@ -177,9 +181,17 @@
 ./internal/metadata TestLocalArtworkCopiedOnDiscoveryDB
 ./internal/metadata TestLocalArtworkRetriesWithoutLibraryRootDB
 
+# A re-cached sidecar leaves its old copy to the reference-checked revision
+# GC, which keeps a copy published again since the re-cache.
+./internal/metadata TestRecachedSidecarRetiresTheOldCopyThroughRevisionGCDB
+
 # With metadata.cache_images off, stored artwork goes back to its provider
 # source, and items whose stored art has none are queued for a refresh.
 ./internal/metadata TestStoredArtworkReleaseDB
+
+# A storage reconcile's bulk reset keeps an uploaded image whose object
+# survived; nothing could fetch it again.
+./internal/metadata TestArtworkReconcileBulkResetVerifiesUploadsDB
 
 # The artwork ladder backfill finds cached artwork that predates the current
 # ladder, on every surface its image type is cached for.
@@ -189,6 +201,13 @@
 ./internal/metadata TestImageLadderBackfillLateOldArtworkReopensCompletedVersion
 ./internal/metadata TestImageLadderBackfillCurrentArtworkKeepsCompletedVersion
 ./internal/metadata TestImageLadderBackfillLateOldBackdropReopensCompletedVersion
+
+# A refresh write keeps artwork an admin published after the refresh read the
+# item, season or episode, including a publication still committing and a row
+# another writer created and published in the meantime.
+./internal/catalog TestRefreshKeepsArtworkPublishedAfterItsReadDB
+./internal/catalog TestRefreshWaitingOnAPublicationKeepsItDB
+./internal/catalog TestRefreshKeepsArtworkOnARowCreatedAndPublishedMeanwhileDB
 
 # Artwork publication, deletion locks and corrected metadata identity.
 ./internal/metadata TestArtworkDeliveryPublicationAndReconciliation
@@ -254,6 +273,8 @@
 ./internal/requests TestEditorIntegrationsDatabase
 ./internal/requests TestIntegrationKeyStaysWithItsAddressDatabase
 ./internal/requests TestClosingRequestForgetsFollowsDatabase
+./internal/requests TestDiscoverLayoutDatabase
+./internal/requests/discoverrows TestDiscoverListSnapshotLeaseDatabase
 
 # Request cleanup, prepared downloads and user-store transactions.
 ./internal/requests TestReplaceFailedIsScopedToRequesterDatabase
@@ -309,6 +330,11 @@
 # what admin watch totals count.
 ./internal/api/handlers TestAdminPlaybackWatchTimeDB
 
+# A play's device, client and stream decisions are filled once by any
+# finalization, its end reason follows the latest one, and the history
+# window is inclusive below and exclusive above.
+./internal/api/handlers TestAdminPlaybackHistoryFactsDB
+
 # Transactional administrator audit details and rollback isolation.
 ./internal/activitylog TestMutationCommitRollbackAndHistoryDB
 
@@ -322,6 +348,7 @@
 ./internal/partman TestOnlinePartitionIndexesKeepWritersAvailableDB
 
 ./internal/downloads TestLocalDownloadCanceledWritePersistsFailureDB
+./internal/downloads TestEphemeralDownloadRechecksProfileAccessDB
 
 # Rating sources keep their merge rules, and a trigger keeps the TMDB vote pair
 # discovery rows rank by in step with the 'tmdb' source.
@@ -347,6 +374,12 @@
 # Plugin event deliveries: a claim takes at most its limit, never shares a row,
 # and only the latest claim records the outcome.
 ./internal/plugins TestEventDeliveryOutboxPostgres
+
+# A row whose plugin ID or version is "." or ".." never loads. Uninstall drops
+# the row and leaves its files, which can sit above the plugin root, and the
+# installation and user settings lists still answer with the row present.
+./internal/plugins TestInstallationStoreDeleteRemovesOnlyTrustedFiles
+./internal/api/handlers TestPluginListsKeepWorkingWithAnInvalidIdentityRowDB
 
 # Autoscan poll markers restart from now, and poll at once, only when the upstream changes.
 ./internal/autoscan TestUpdateSourceMarkerReset
@@ -564,3 +597,7 @@
 # A server set up before the setup wizard saved its marker sharing choice keeps
 # sharing by default; a database with no account waits for the wizard.
 ./migrations TestMarkersShareByDefaultExistingInstallsMigrationPostgres
+
+# A Watch Together room's suggestion cap holds when creators on two API servers
+# race on the v1 and v2 create paths.
+./internal/watchtogether TestSuggestionRoomLimitPG
