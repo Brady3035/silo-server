@@ -3143,8 +3143,11 @@ func newChiRouter(deps Dependencies) chi.Router {
 		v2deps.AuthProviderIconPublic = deps.PluginHTTPProxy.PublicGETRoute
 	}
 	pluginRouteAccess := newPluginAccessResolver(jwtService, sessionRepo, apiKeyRepo, userRepo, viewerResolver, actingAdmin)
-	// Assets keep their JWT-only access: API keys never reached them.
+	// Assets keep their JWT-only access: API keys never reached them. Their
+	// callers keep only authenticated and admin, so they never renew the
+	// launch cookie.
 	pluginAssetAccess := newPluginAccessResolver(jwtService, sessionRepo, nil, nil, viewerResolver, actingAdmin)
+	pluginAssetAccess.noRenewal = true
 	v2deps.PluginContent = plugins.NewContentHandler(deps.PluginHTTPProxy, func(r *http.Request) plugins.ContentAccess {
 		resolved := pluginRouteAccess.resolve(r)
 		return plugins.ContentAccess{

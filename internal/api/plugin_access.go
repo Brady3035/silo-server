@@ -29,6 +29,9 @@ type pluginAccessResolver struct {
 	// actingAdmin is the decision the admin route groups use: the admin role,
 	// exercised through the account's primary profile.
 	actingAdmin apimw.ActingAdminDecider
+	// noRenewal skips launch-cookie renewal for callers that cannot deliver
+	// a renewed cookie, so they don't pay for the profile check and signing.
+	noRenewal bool
 }
 
 // pluginSessionChecker is the session lookup the resolver needs:
@@ -133,7 +136,7 @@ func (p *pluginAccessResolver) resolve(r *http.Request) pluginAccess {
 		userID:        claims.UserID,
 		profileID:     profileID,
 	}
-	if fromCookie && claims.TokenType == auth.TokenTypePluginAccess && claims.ExpiresAt != nil &&
+	if !p.noRenewal && fromCookie && claims.TokenType == auth.TokenTypePluginAccess && claims.ExpiresAt != nil &&
 		time.Until(claims.ExpiresAt.Time) < handlers.PluginLaunchTTL-pluginRenewAfter &&
 		p.profileUnchanged(r, &current) {
 		if renewed, err := p.jwt.GeneratePluginAccessToken(claims.UserID, authority.Role, claims.SessionID, claims.ProfileID, claims.ProfilePINRevision, handlers.PluginLaunchTTL); err == nil {
