@@ -114,7 +114,7 @@ the document is always the full one:
 }
 ```
 
-The seventeen feature strings above are the full set this server version advertises on `/api/v1`. `/api/v2` advertises them plus `buffering_quality_v1`, `playback_plan_summary_v1`, `subrip_sidecar_v1`, `marker_thumbnails_v1`, `hls_subtitle_renditions_v1`, `plan_active_quality_v1`, `hls_remux_subtitle_renditions_v1`, `hls_copy_mpegts_v1`, and `hls_variable_substitution_v1`:
+The seventeen feature strings above are the full set this server version advertises on `/api/v1`. `/api/v2` advertises them plus `buffering_quality_v1`, `playback_plan_summary_v1`, `subrip_sidecar_v1`, `marker_thumbnails_v1`, `hls_subtitle_renditions_v1`, `plan_active_quality_v1`, `hls_remux_subtitle_renditions_v1`, `hls_copy_mpegts_v1`, `hls_variable_substitution_v1`, and `codec_channel_ceilings_v1`:
 
 | Feature | What it promises |
 | --- | --- |
@@ -143,6 +143,7 @@ The seventeen feature strings above are the full set this server version adverti
 | `hls_remux_subtitle_renditions_v1` | `/api/v2` only, and only with `hls_subtitle_renditions_v1`. The client also receives a `server_remux_hls` plan's embedded text subtitle as `subtitle.hls_rendition`, on a subtitle playlist that follows the remux's keyframe-cut segments; without it a remux keeps its sidecar (§8) |
 | `hls_copy_mpegts_v1` | `/api/v2` only, and sent by the client in `deliveries.hls.features` rather than `client_features`. The client's `server_remux_hls` plans that copy H.264 or HEVC are packaged as MPEG-TS instead of fragmented MP4, marked by `effective_recipe.segment_container: "mpegts"` (§5) |
 | `hls_variable_substitution_v1` | `/api/v2` only, and sent by the client in `deliveries.hls.features` rather than `client_features`. Playlists the server rewrites may then carry a repeated media credential once through HLS variable substitution (`EXT-X-DEFINE`); without it they keep literal URIs (§4.2) |
+| `codec_channel_ceilings_v1` | `/api/v2` only. The server honors a delivery's `max_channels_by_codec` (§3). A client that needs a ceiling for one codec only (stereo AAC beside E-AC-3 5.1) sends it there instead of narrowing `max_channels` for every codec |
 
 `plan_source_duration_v1` is the reason feature detection is a list and not a version
 number: without it, a client cannot tell a server that never sends the runtime
@@ -158,8 +159,9 @@ their own advertisements. `hdr_to_sdr_tonemap` additionally requires an
 administrator-enabled hardware or software policy and a successful device-level
 smoke probe for the applicable PQ, HLG, or SDR fallback-base source kind, or,
 for Dolby Vision Profile 5 and compatibility ID `0`, the `dolby_vision` kind,
-which only RPU-applying executors smoke. A client must not assume a
-transformation exists because this document names it.
+which only RPU-applying executors smoke, or, for PQ tagged full range, the
+`pq_full_range` kind, which only the software executor smokes. A client must
+not assume a transformation exists because this document names it.
 
 `enabled` survives from the rollout period and is now constant `true`; the
 negative shape was deliberately removed while the alpha `/api/v1` contract was
@@ -223,7 +225,7 @@ constant:
 | Field | Omitted | Present |
 | --- | --- | --- |
 | `start_position` | The profile's saved resume point for this item, or `0` when there is none, it is already complete, or the file is one part of a multipart item (every part shares the item's resume point, so a part-local seek to it would land somewhere arbitrary). It is required when `progress_persistence` is `client` | Exactly that position. `0` means *start over* |
-| `audio_track_id` / `audio_track_index` | The profile's preferred audio track, resolved from the series preference, then the profile's audio-language setting, then the library override. Only tracks FFmpeg can decode are candidates while the file has one, so a track ffprobe names no codec for (AVS3 audio, for example) is passed over | Exactly that track. When the file has no track at that index (a selection carried over from another episode or version), the file's default track plays and the plan carries `audio_track_unavailable`. A track FFmpeg cannot decode ends in the non-retryable `audio_conversion_unsupported` terminal |
+| `audio_track_id` / `audio_track_index` | The profile's preferred audio track, resolved from the series preference, then the profile's audio-language setting, then the library override. Only tracks FFmpeg can decode are candidates while the file has one, so a track ffprobe names no codec for (AVS3 audio, for example) is passed over. Unless the series preference names the track, the request's capabilities then refine it: when the plan for the preferred track converts its audio (or does not plan) and the plan for another main track in the same language plays it unconverted with at least as many channels, that track plays. Commentary and audio-description tracks are never substituted in, and among several candidates the most channels, then Atmos, then the codec wins. A file with TrueHD 7.1 and E-AC-3 5.1 tracks plays the E-AC-3 track on a client without TrueHD and keeps TrueHD on one that decodes it. A client therefore omits the track when the viewer has not picked one, rather than echoing `effective_audio_track_index` | Exactly that track. When the file has no track at that index (a selection carried over from another episode or version), the file's default track plays and the plan carries `audio_track_unavailable`. A track FFmpeg cannot decode ends in the non-retryable `audio_conversion_unsupported` terminal |
 
 `progress_persistence` separates the live session clock from durable resume
 ownership. Omission (or `server`) means session progress may update the item's
@@ -737,6 +739,7 @@ Each `deliveries` entry describes one class:
 | `containers`, `video_codecs`, `audio_decode_codecs` | Flat lowercase name lists |
 | `audio_passthrough_codecs` | Bitstream-out candidates; only ever honoured under the `exact` tier (§3) |
 | `max_channels` | Optional ceiling on the channel count of the audio stream this class delivers: the most channels the client can play from it. A track above it is never copied to this class: the planner converts it to AAC within the ceiling, on a video-copy remux when the video can be copied there. A value of zero or less means no ceiling. A client whose player downmixes surround itself omits it; one whose output cannot render more channels than it sets it. Per-sink passthrough limits belong in `output.audio_passthrough.entries` |
+| `max_channels_by_codec` | Optional ceiling per audio codec on top of `max_channels`, keyed by the codec names of `audio_decode_codecs` (at most 32 entries): `{"aac": 2}` from a client that decodes AAC only in stereo but plays E-AC-3 5.1. A track in a listed codec above its ceiling is never copied to this class, and an AAC conversion stays within the `aac` entry. Other codecs follow `max_channels` alone. A value of zero or less means no ceiling |
 | `hdr_details` | Optional per-class HDR support, overriding the device-level value |
 | `subtitles` | `sidecar_text`, `ass_styling`, `embedded_bitmap`, `sidecar_bitmap`, `font_attachments`, the legacy `embedded_text` hint, and optional `native_embedded` attestations (§8) |
 | `features` | Class-scoped feature strings |
@@ -2084,7 +2087,7 @@ tone-map smoke probe is lazy and cached by binary, backend, and device:
 | `audio_to_aac` | `ffmpeg -encoders` contains an `aac` encoder and bounded silent-frame smoke tests execute the exact timestamp-normalisation graph (stereo input) and stereo-downmix limiter graph (5.1 input) |
 | `video_to_h264` | `ffmpeg -encoders` contains any of `libx264`, `h264_qsv`, `h264_vaapi`, `h264_nvenc`, `h264_videotoolbox` |
 | `video_to_hevc` | `ffmpeg -encoders` contains `libx265` and a bounded one-frame `libx265` 8-bit SDR encode succeeds; the transcode backend probe validates a hardware HEVC encoder before that backend is selected |
-| `hdr_to_sdr_tonemap` | A bounded decode → BT.709 H.264 encode succeeds for the advertised PQ, BT.2100 HLG, legacy HLG, BT.709 SDR-base, and/or BT.2020 SDR-base source kinds on the real software, VAAPI/QSV, or NVENC executor. The Dolby Vision kind is smoke-tested only on executors whose filter applies an RPU (`tonemapx`, `tonemap_opencl`, `tonemap_cuda`, each run with `apply_dovi=1`) |
+| `hdr_to_sdr_tonemap` | A bounded decode → BT.709 H.264 encode succeeds for the advertised PQ, BT.2100 HLG, legacy HLG, BT.709 SDR-base, and/or BT.2020 SDR-base source kinds on the real software, VAAPI/QSV, or NVENC executor. The Dolby Vision kind is smoke-tested only on executors whose filter applies an RPU (`tonemapx`, `tonemap_opencl`, `tonemap_cuda`, each run with `apply_dovi=1`), and the full-range PQ kind only on the software executor (`tonemapx` or the Hable fallback) |
 
 `GET /playback/capability` reports the union of currently eligible local and
 pooled executors. The generic tone-map transformation does not reveal hardware
@@ -2116,7 +2119,17 @@ both the PQ transfer and Dolby Vision metadata; an untagged base can be plain
 SDR, which the RPU path renders blown out. The `dolby_vision` kind is not part of an executor's
 complete inventory, so an FFmpeg build that refuses `apply_dovi` keeps its
 other kinds cached. A `dolby_vision` smoke that fails for any other reason is
-retried after five minutes instead of being cached. Missing,
+retried after five minutes instead of being cached.
+A PQ base whose stream is tagged full range (`pc`) resolves to the
+`pq_full_range` kind. Every other kind's graph declares limited-range input;
+this one keeps each decoded frame's own range, because a container can tag a
+stream full range while its bitstream codes limited levels. Only the software
+executor advertises it, because its `zscale` and `tonemapx` stages read that
+range; the hardware filters have not been shown to, so a hardware-only policy
+refuses these sources with `hdr_transcode_unsupported`. The software
+executor's complete inventory includes `pq_full_range`. Its decoded samples
+must carry an explicit range, so it always takes the sample check below. A
+full-range HLG or SDR base remains unsupported. Missing,
 reserved, legacy, or contradictory signaling
 is only a candidate classification: the selected executor must successfully
 decode and normalize samples near the beginning, midpoint, and end before the
