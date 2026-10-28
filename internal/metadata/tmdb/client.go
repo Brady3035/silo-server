@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Silo-Server/silo-server/internal/cache"
@@ -44,6 +45,10 @@ const (
 	mediaDetailCacheTTL = 2 * time.Minute
 )
 
+// RequestsPerSecond is the budget for the TMDB requests Silo sends itself:
+// for every node together when Redis is configured, per process otherwise.
+const RequestsPerSecond = 40
+
 // maxPages is TMDB's own ceiling on its paged feeds (trending, popular,
 // discover): it answers no page past 500, at 20 results a page.
 const maxPages = 500
@@ -53,7 +58,7 @@ type Client struct {
 	httpClient           *http.Client
 	apiKey               string
 	baseURL              string
-	limiter              *rate.Limiter
+	limiter              Limiter
 	discoverSectionCache *cache.TTLCache[*MediaPage]
 	discoverPageCache    *cache.TTLCache[*MediaPage]
 	externalIDCache      *cache.TTLCache[*ExternalIDs]
@@ -61,17 +66,30 @@ type Client struct {
 	certificationCache   *cache.TTLCache[string]
 	mediaDetailCache     *cache.TTLCache[*MediaDetail]
 	cacheGroup           singleflight.Group
+	flightsMu            sync.Mutex
+	flights              map[string]*sharedFlight
 	responseCacheTTL     time.Duration
 }
-
-// NewClient creates a TMDB API client with the given API key and rate limit
-// (requests per second). If apiKey is empty, Silo's public project API key is
-// used.
 
 // ErrNotFound is wrapped by errors for titles TMDB does not have (HTTP 404).
 var ErrNotFound = errors.New("tmdb: not found")
 
+// Limiter paces a client's requests: Wait returns once the next request may
+// go, or with an error once ctx ends first. *rate.Limiter is one.
+type Limiter interface {
+	Wait(ctx context.Context) error
+}
+
+// NewClient creates a TMDB API client with the given API key and its own rate
+// limit (requests per second). If apiKey is empty, Silo's public project API
+// key is used.
 func NewClient(apiKey string, rateLimit int) *Client {
+	return NewClientWithLimiter(apiKey, rate.NewLimiter(rate.Limit(rateLimit), rateLimit))
+}
+
+// NewClientWithLimiter creates a TMDB API client whose requests wait on
+// limiter, which other clients may share.
+func NewClientWithLimiter(apiKey string, limiter Limiter) *Client {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		apiKey = projectAPIKey
@@ -80,7 +98,7 @@ func NewClient(apiKey string, rateLimit int) *Client {
 		httpClient:           &http.Client{Timeout: 30 * time.Second},
 		apiKey:               apiKey,
 		baseURL:              defaultBaseURL,
-		limiter:              rate.NewLimiter(rate.Limit(rateLimit), rateLimit),
+		limiter:              limiter,
 		discoverSectionCache: cache.NewTTLCache[*MediaPage](),
 		discoverPageCache:    cache.NewTTLCache[*MediaPage](),
 		externalIDCache:      cache.NewTTLCache[*ExternalIDs](),
@@ -122,12 +140,9 @@ func (c *Client) Close() {
 }
 
 // doGet executes a GET request against the TMDB API with rate limiting,
-// exponential backoff on 5xx/429, and JSON decoding into dest.
+// exponential backoff on 5xx/429, and JSON decoding into dest. Every attempt
+// waits on the limiter.
 func (c *Client) doGet(ctx context.Context, path string, dest any) error {
-	if err := c.limiter.Wait(ctx); err != nil {
-		return err
-	}
-
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
@@ -135,6 +150,10 @@ func (c *Client) doGet(ctx context.Context, path string, dest any) error {
 	reqURL := c.baseURL + path + sep + "api_key=" + url.QueryEscape(c.apiKey)
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// A retry is another request against the same budget.
+		if err := c.limiter.Wait(ctx); err != nil {
+			return err
+		}
 		// reqURL carries the API key and a *url.Error prints the whole URL, so
 		// these errors drop the query string before callers log or store them.
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -290,7 +309,7 @@ func (c *Client) ChartPage(ctx context.Context, params ChartParams, page int) (*
 		}
 	}
 
-	value, err, _ := c.cacheGroup.Do(cacheKey, func() (any, error) {
+	value, err := c.sharedFetch(ctx, cacheKey, func(ctx context.Context) (any, error) {
 		if c.discoverSectionCache != nil {
 			if cached, ok := c.discoverSectionCache.Get(cacheKey); ok {
 				return cached, nil
@@ -681,7 +700,7 @@ func (c *Client) DiscoverPage(ctx context.Context, mediaType string, params Disc
 		}
 	}
 
-	value, err, _ := c.cacheGroup.Do(cacheKey, func() (any, error) {
+	value, err := c.sharedFetch(ctx, cacheKey, func(ctx context.Context) (any, error) {
 		if c.discoverPageCache != nil {
 			if cached, ok := c.discoverPageCache.Get(cacheKey); ok {
 				return cached, nil
@@ -1377,7 +1396,7 @@ func (c *Client) GetExternalIDs(ctx context.Context, mediaType string, id int) (
 		}
 	}
 
-	value, err, _ := c.cacheGroup.Do(cacheKey, func() (any, error) {
+	value, err := c.sharedFetch(ctx, cacheKey, func(ctx context.Context) (any, error) {
 		if c.externalIDCache != nil {
 			if cached, ok := c.externalIDCache.Get(cacheKey); ok {
 				return cached, nil
@@ -1505,6 +1524,74 @@ func certificationPath(mediaType string, id int) (string, error) {
 
 // cachedCertification fetches one certification value once across concurrent
 // callers and caches it.
+// sharedFlight is one fetch that concurrent callers of the same key share.
+type sharedFlight struct {
+	done    chan struct{}
+	val     any
+	err     error
+	waiters int
+	cancel  context.CancelFunc
+}
+
+// sharedFetch runs fetch once for every concurrent caller with key. The fetch
+// is detached from the caller that started it, so one caller giving up (a
+// closed page) does not fail another still waiting (a collection sync), and
+// each caller stops waiting when its own context ends. Once every caller has
+// given up, the fetch is canceled, so an abandoned fetch does not keep waiting
+// for the shared request budget.
+func (c *Client) sharedFetch(ctx context.Context, key string, fetch func(context.Context) (any, error)) (any, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.flightsMu.Lock()
+	f := c.flights[key]
+	if f == nil {
+		// No deadline of its own: the fetch lasts as long as someone waits
+		// for it, so a long Retry-After or budget wait is cut short only
+		// when every caller has given up.
+		fetchCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		f = &sharedFlight{done: make(chan struct{}), cancel: cancel}
+		if c.flights == nil {
+			c.flights = make(map[string]*sharedFlight)
+		}
+		c.flights[key] = f
+		go func() {
+			defer cancel()
+			f.val, f.err = fetch(fetchCtx)
+			c.endFlight(key, f)
+			close(f.done)
+		}()
+	}
+	f.waiters++
+	c.flightsMu.Unlock()
+
+	select {
+	case <-f.done:
+		return f.val, f.err
+	case <-ctx.Done():
+		c.flightsMu.Lock()
+		f.waiters--
+		if f.waiters == 0 {
+			// Nobody waits any more. A caller arriving after this starts a
+			// new fetch rather than joining a canceled one.
+			f.cancel()
+			if c.flights[key] == f {
+				delete(c.flights, key)
+			}
+		}
+		c.flightsMu.Unlock()
+		return nil, ctx.Err()
+	}
+}
+
+func (c *Client) endFlight(key string, f *sharedFlight) {
+	c.flightsMu.Lock()
+	defer c.flightsMu.Unlock()
+	if c.flights[key] == f {
+		delete(c.flights, key)
+	}
+}
+
 func (c *Client) cachedCertification(ctx context.Context, cacheKey string, fetch func(context.Context) (string, error)) (string, error) {
 	if c.certificationCache != nil {
 		if cached, ok := c.certificationCache.Get(cacheKey); ok {
