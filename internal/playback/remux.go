@@ -45,6 +45,13 @@ var (
 // escaped comma is part of one FFmpeg argument.
 const ResumeLeadingPictureDropBitstreamFilter = `noise=drop=lt(pts\,startpts)*not(key)`
 
+// primedResumeLeadingPictureDropBitstreamFilter is the drop for a primed copy
+// (see remuxIDRPrimer). Register 0 counts keyframes and register 1 holds the
+// second one's pts: the concat outpoint is checked against DTS, so frames that
+// follow the primer IDR in decode order still pass it, and they go along with
+// the leading pictures of the seek's keyframe.
+const primedResumeLeadingPictureDropBitstreamFilter = `noise=drop=st(0\,ld(0)+key);if(key*eq(ld(0)\,2)\,st(1\,pts));not(key)*(eq(ld(0)\,1)+eq(ld(0)\,2)*lt(pts\,ld(1)))`
+
 // ffmpegBinary returns the path to the ffmpeg binary.
 // Resolved once at first call, then cached for the process lifetime.
 func ffmpegBinary() string {
@@ -234,24 +241,29 @@ func resolveRemuxIDRPrimer(ctx context.Context, bin, filePath string, seekSecond
 		return nil
 	}
 	anchorSeconds, _, err := ResolveCopySeekAnchor(ctx, bin, filePath, seekSeconds, 0)
+	probeCtx, cancel := context.WithTimeout(ctx, copySeekProbeTimeout)
+	defer cancel()
 	var firstPTS, anchorPTS float64
 	if err == nil {
-		firstPTS, err = firstCopiedVideoPacketSeconds(ctx, bin, filePath, 0, false)
+		firstPTS, err = firstCopiedVideoPacketSeconds(probeCtx, bin, filePath, 0, false)
 	}
 	if err == nil {
-		anchorPTS, err = firstCopiedVideoPacketSeconds(ctx, bin, filePath, seekSeconds, false)
+		anchorPTS, err = firstCopiedVideoPacketSeconds(probeCtx, bin, filePath, seekSeconds, false)
 	}
 	if err != nil {
 		slog.WarnContext(ctx, "remux IDR primer unavailable; serving the seeked copy without it", "error", err)
 		return nil
 	}
+	if anchorPTS <= firstPTS {
+		return nil // the seek lands on the first frame, so the copy already starts on it
+	}
 	return &remuxIDRPrimer{firstPTS: firstPTS, anchorPTS: anchorPTS, anchorSeconds: anchorSeconds}
 }
 
 // concatList is the ffconcat script for the primed video: the source's first
-// frame, then the source from the seek's keyframe. The leading-picture drop
-// still removes that keyframe's leading pictures, which the concat clock
-// places before the primer.
+// frame, then the source from the seek's keyframe. The outpoint still lets
+// more than one frame through; primedResumeLeadingPictureDropBitstreamFilter
+// keeps only the first.
 func (p *remuxIDRPrimer) concatList(filePath string) string {
 	quoted := "'file:" + strings.ReplaceAll(fspath.Decode(filePath), "'", `'\''`) + "'"
 	format := func(seconds float64) string { return strconv.FormatFloat(seconds, 'f', 6, 64) }
@@ -331,7 +343,9 @@ func buildRemuxArgsWithLeadingPictureDropV3(filePath, outputFormat string, seekS
 	args = append(args, "-sn", "-dn")
 
 	videoBitstreamFilters := make([]string, 0, 2)
-	if dropLeadingPictures && seekSeconds > 0 && !audioOnly {
+	if primer != nil {
+		videoBitstreamFilters = append(videoBitstreamFilters, primedResumeLeadingPictureDropBitstreamFilter)
+	} else if dropLeadingPictures && seekSeconds > 0 && !audioOnly {
 		videoBitstreamFilters = append(videoBitstreamFilters, ResumeLeadingPictureDropBitstreamFilter)
 	}
 	if dvProfile == 7 {
