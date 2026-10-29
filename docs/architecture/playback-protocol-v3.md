@@ -331,20 +331,25 @@ A playback session lasts until the client stops it, the server stops it (for
 example an administrator's stop, or a withdrawn plan the client does not replan
 off, §6.1), or the server decides it was abandoned. The four endpoints above
 are not a heartbeat: a client that calls only those, while its player fetches
-no media from this server, loses its session 45 to 60 seconds after its `start`
-or its last `replan` that returned a playable plan (about five minutes when a
-proxy node serves the media). After that its `replan`, progress, and stop calls
-answer `404 playback_session_not_found`.
+no media from this server, loses its session 90 to 105 seconds after its
+`start` or its last `replan` that returned a playable plan (about five minutes
+when a proxy node serves the media). After that its `replan`, progress, and
+stop calls answer `404 playback_session_not_found`.
 
 Every 15 seconds the server ends each session that has shown no activity for
 **45 seconds**, or for **30 minutes** when the client's latest progress report
 said the player was paused. A session that has never sent a progress report is
-on the 45-second window. Both windows are fixed. These count as activity:
+on the 45-second window. A session is never ended within **90 seconds** of its
+`start`, of a `replan` that returned a playable plan, or of being rebuilt on
+another server, however long it has been idle: a player that cannot start a
+plan has no position to report, and this window lets it wait out a startup
+timeout of up to 60 seconds and still ask for the next fallback. The windows are
+fixed. These count as activity:
 
 | Activity | Note |
 | --- | --- |
 | The `POST /playback/start` that created the session | Starts the clock |
-| A `POST /playback/{session_id}/replan` that returns a playable plan | Counts once; it is not a heartbeat |
+| A `POST /playback/{session_id}/replan` that returns a playable plan | Counts once, and starts the 90-second window again; it is not a heartbeat |
 | `POST /playback/{session_id}/progress` | The heartbeat. Progress reports are the only way to report a pause |
 | A request for an HLS playlist or segment (`server_remux_hls`, `server_transcode_hls`) | Each request counts. Through a proxy node, see below |
 | A request to the `stream.url` of `original_http` or `server_remux_progressive` | The session is kept while the request is open; its start and end count. Through a proxy node, see below |
@@ -387,8 +392,9 @@ A client therefore:
 2. Stops the session with `DELETE /playback/{session_id}` when playback ends,
    so the server releases its transcode and records the stop at once.
    Otherwise both wait until the session expires: 45 to 60 seconds after its
-   last activity, about five minutes for proxy-served media, or about 30
-   minutes if the last progress report said paused.
+   last activity but no sooner than 90 seconds after its latest plan, about
+   five minutes for proxy-served media, or about 30 minutes if the last
+   progress report said paused.
 3. Treats `404 playback_session_not_found` from `replan` or progress as the end
    of the session and, if the viewer is still watching, starts a new attempt
    (§6.2). A `404 playback_session_not_found` from `DELETE` means the session
@@ -482,7 +488,7 @@ required and are one of:
 | --- | --- | --- |
 | `exact` | Android (`MediaCodecList`) | Full strict validation. The server walks `video_decode[]` and requires a hardware entry matching codec, profile, level, bit depth, and every `max_*` bound. Only this tier can earn a validated audio **passthrough** claim. |
 | `platform_attested` | Apple (platform-backed Aether decoder stack) | Same walk. Profile and level are **skipped for hardware entries** because the platform cannot enumerate them; explicitly opted-in software entries enforce any profiles/levels the pinned stack supplies. All other bounds still apply. |
-| `declared` | Web (`isTypeSupported`) | Flat list match only: `codecs_video` / `codecs_video_hardware` membership. No `video_decode[]` walk. |
+| `declared` | Web (`isTypeSupported`) | Flat list match: `codecs_video` / `codecs_video_hardware` membership. A `video_decode[]` entry naming the source codec can only narrow that match (its bounds must admit the source; `hardware` is ignored); it never grants a codec the flat lists lack. The web sends the H.264 bit depths its probes accepted, such as `{"codec":"h264","bit_depths":[8]}` when the browser refuses H.264 High 10. |
 
 Four rules follow from the table and are easy to get wrong:
 
@@ -494,8 +500,8 @@ direct route. The plan is downgraded and carries the decision reason
 `evidence_insufficient_for_direct` plus the matching degradation warning, which
 distinguishes "your evidence didn't support this" from "your device said no." A
 client advertising a strict tier must populate `video_decode[]`; the flat lists
-alone earn it nothing. On `declared` the flat lists are the whole mechanism, so
-that tier never produces this signal.
+alone earn it nothing. On `declared` the flat lists grant eligibility and any
+`video_decode[]` entry only restricts it, so that tier never produces this signal.
 
 Note the precise trigger: the signal fires only when *no* entry named the codec.
 If an entry matched the codec but the source exceeded one of its bounds — a
@@ -513,7 +519,7 @@ Download creation reuses this bounded vocabulary additively inside `caps`:
 `client_features`, `video_evidence`, and `video_decode` have the same meanings
 and limits. Opting in requires a non-empty exact/platform-attested detailed
 list; malformed partial opt-ins are rejected rather than falling back to flat
-claims. This matters when hardware and software decoders have different
+claims, so the `declared` narrowing entries playback accepts are refused there. This matters when hardware and software decoders have different
 ceilings: the flat `max_resolution` remains a coarse device ceiling, while the
 detailed entry decides whether a particular original file is safe. Apple keeps
 the legacy coarse ceiling at 1080p so older servers fail safely; a detailed

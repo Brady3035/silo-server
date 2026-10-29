@@ -72,8 +72,9 @@ type CatalogItem struct {
 	WorkTitle                  string              `json:"work_title,omitempty"`
 	WorkFormats                []CatalogWorkFormat `json:"work_formats,omitempty" doc:"Sibling editions of the same work"`
 	// An episode card's parent artwork, so a client can draw a hero from the
-	// series backdrop without fetching the episode's detail. Seasons store no
-	// backdrop, so there is no season backdrop member.
+	// series backdrop without fetching the episode's detail. There is no
+	// season backdrop member; Continue Watching and Next Up rows carry it as
+	// backdrop_url (withResumeEpisodeBackdrop).
 	SeriesPosterURL         string `json:"series_poster_url,omitempty" format:"uri-reference" doc:"On an episode card: the series poster, at poster_url's size. Presigned, short-lived; absent when the series has none or the surface does not load it"`
 	SeriesPosterThumbhash   string `json:"series_poster_thumbhash,omitempty" doc:"On an episode card: the series poster's ThumbHash"`
 	SeriesBackdropURL       string `json:"series_backdrop_url,omitempty" format:"uri-reference" doc:"On an episode card: the series backdrop, at backdrop_url's size. Unlike backdrop_url it is never the episode still. Presigned, short-lived; absent when the series has none or the surface does not load it"`
@@ -216,6 +217,26 @@ func catalogItemOfSection(v handlers.SectionItemView, sel ratingsources.Selectio
 		item.RatingTMDB = v.EpisodeRatingTMDB
 	}
 	return withShownRatings(item, sel)
+}
+
+// withResumeEpisodeBackdrop gives an episode card in a Continue Watching or
+// Next Up row the season backdrop, else the series backdrop, in place of the
+// episode still. A card with neither keeps the backdrop its section chose.
+// Frozen /api/v1 keeps the still.
+func withResumeEpisodeBackdrop(item *CatalogItem, v handlers.SectionItemView) {
+	if v.Type != themeOwnerEpisode {
+		return
+	}
+	p := v.ParentArtwork
+	switch {
+	case p.SeasonBackdropURL != "":
+		item.BackdropURL, item.BackdropThumbhash = p.SeasonBackdropURL, p.SeasonBackdropThumbhash
+	case p.SeriesBackdropURL != "":
+		item.BackdropURL, item.BackdropThumbhash = p.SeriesBackdropURL, p.SeriesBackdropThumbhash
+	default:
+		return
+	}
+	item.BackdropIsEpisodeStill = new(false)
 }
 
 // catalogItemOfListing renders a listing (collection, browse) card.

@@ -136,6 +136,7 @@ type Session struct {
 	StartedAt                  time.Time
 	UpdatedAt                  time.Time
 	LastActivityAt             time.Time
+	PlanCommittedAt            time.Time // when the current plan reached the client; see StartupSessionGrace
 	activeTransportCount       int
 	replacementPlayMethod      PlayMethod
 	streamRevision             uint64
@@ -256,6 +257,7 @@ type SessionReplacementRollback struct {
 	previousWatch                WatchTime
 	restoreProgress              bool
 	previousReplacementMethod    PlayMethod
+	previousPlanCommittedAt      time.Time
 }
 
 // ErrSessionReplacementSuperseded means a replacement rollback would overwrite
@@ -378,6 +380,7 @@ type SessionManager struct {
 	pausedGrace          time.Duration
 	expireHooks          []func(*Session)
 	finishHooks          []func(context.Context, *Session)
+	lifecycleHooks       []LifecycleHooks
 	compatActivityReader SessionActivityReader
 	compatExpiryClaimer  SessionExpiryClaimer
 	// deliveryActivityReader reports media that another node served for a
@@ -439,6 +442,15 @@ const (
 	// DefaultActiveSessionGrace is how long an unpaused session may go without
 	// observed playback activity before it stops counting toward limits.
 	DefaultActiveSessionGrace = 45 * time.Second
+
+	// StartupSessionGrace is how long after a plan is committed the liveness
+	// policy keeps the session, however long it has been idle. A client that
+	// cannot start the plan sends no progress (its player has no position
+	// yet) and asks for the next fallback only when its startup timeout runs
+	// out, so this must outlast every client's startup timeout plus a replan
+	// round trip (issue #3202). docs/architecture/playback-protocol-v3.md
+	// §2.5 publishes it to clients.
+	StartupSessionGrace = 90 * time.Second
 
 	// remoteTransportIdleGrace is the floor on the idle windows for a session
 	// whose media is served by another node. See remoteTransportGrace: it must
@@ -730,6 +742,7 @@ func newSession(
 		StartedAt:              now,
 		UpdatedAt:              now,
 		LastActivityAt:         now,
+		PlanCommittedAt:        now,
 	}
 }
 
@@ -777,6 +790,7 @@ func (m *SessionManager) RegisterReconstructed(s *Session) *Session {
 	}
 	s.UpdatedAt = now
 	s.LastActivityAt = now
+	s.PlanCommittedAt = now
 	m.sessions[s.ID] = s
 	return s
 }
@@ -867,6 +881,7 @@ func (m *SessionManager) RegisterReconstructedWithLimits(ctx context.Context, s 
 	}
 	s.UpdatedAt = now
 	s.LastActivityAt = now
+	s.PlanCommittedAt = now
 	m.sessions[s.ID] = s
 	return s, nil
 }
@@ -1254,6 +1269,23 @@ func (m *SessionManager) UpdateStreamState(sessionID string, state SessionStream
 	return nil
 }
 
+// MarkPlanCommitted restarts the StartupSessionGrace window once a start has
+// committed the plan it is about to return. Admission sets the window too, but
+// preparing the transport can take long enough to eat into it before the
+// client has even received the plan. Ordinary stream-state updates leave it.
+func (m *SessionManager) MarkPlanCommitted(sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	s, ok := m.sessions[sessionID]
+	if !ok {
+		return ErrSessionNotFound
+	}
+	m.touchSessionLocked(s)
+	s.PlanCommittedAt = s.LastActivityAt
+	return nil
+}
+
 // SetStreamLocation preserves the negotiated bitrate-policy classification
 // when a compatible client starts its media request on another network path.
 func (m *SessionManager) SetStreamLocation(sessionID, location string) error {
@@ -1478,6 +1510,7 @@ func (m *SessionManager) applyReplacementLocked(
 		previousEffectiveMediaFileID: s.MediaFileID,
 		previousStreamState:          snapshotSessionStreamStateLocked(s),
 		previousReplacementMethod:    s.replacementPlayMethod,
+		previousPlanCommittedAt:      s.PlanCommittedAt,
 	}
 	if replacement.PositionSeconds != nil {
 		rollback.previousPosition = s.Position
@@ -1502,6 +1535,7 @@ func (m *SessionManager) applyReplacementLocked(
 	s.streamRevision++
 	rollback.appliedRevision = s.streamRevision
 	m.touchSessionLocked(s)
+	s.PlanCommittedAt = s.LastActivityAt
 	if replacement.PositionSeconds != nil {
 		s.Watch.Observe(s.Position, s.IsPaused, s.UpdatedAt)
 	}
@@ -1532,6 +1566,7 @@ func (m *SessionManager) RollbackReplacement(sessionID string, rollback SessionR
 		s.Watch = rollback.previousWatch
 	}
 	s.replacementPlayMethod = rollback.previousReplacementMethod
+	s.PlanCommittedAt = rollback.previousPlanCommittedAt
 	s.streamRevision++
 	m.touchSessionLocked(s)
 	return nil
@@ -1932,6 +1967,102 @@ func (m *SessionManager) FinishSession(ctx context.Context, sessionID string) er
 	return nil
 }
 
+// LifecycleHooks hear a playback frontend announce a session's start and
+// report a pause without a progress sequence (Jellyfin, Audiobookshelf, the
+// v1 bridge), for the admin lifecycle events.
+type LifecycleHooks struct {
+	Started       func(ctx context.Context, s *Session, frontend string)
+	PauseReported func(ctx context.Context, sessionID string, paused bool)
+}
+
+// AddLifecycleHooks registers hooks for AnnounceStart and ReportPause.
+func (m *SessionManager) AddLifecycleHooks(hooks LifecycleHooks) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lifecycleHooks = append(m.lifecycleHooks, hooks)
+}
+
+// AnnounceStart tells the lifecycle hooks a frontend started this session.
+// frontend names the surface: native, bridge, jellyfin or abs.
+func (m *SessionManager) AnnounceStart(ctx context.Context, sessionID, frontend string) {
+	m.mu.RLock()
+	s, ok := m.sessions[sessionID]
+	var started Session
+	if ok {
+		started = *s
+	}
+	hooks := append([]LifecycleHooks{}, m.lifecycleHooks...)
+	m.mu.RUnlock()
+	if !ok {
+		return
+	}
+	for _, hook := range hooks {
+		if hook.Started != nil {
+			hook.Started(ctx, &started, frontend)
+		}
+	}
+}
+
+// ReportPause tells the lifecycle hooks a client reported this pause state
+// without a progress sequence.
+func (m *SessionManager) ReportPause(ctx context.Context, sessionID string, paused bool) {
+	m.mu.RLock()
+	hooks := append([]LifecycleHooks{}, m.lifecycleHooks...)
+	m.mu.RUnlock()
+	for _, hook := range hooks {
+		if hook.PauseReported != nil {
+			hook.PauseReported(ctx, sessionID, paused)
+		}
+	}
+}
+
+// FinishDetached runs the finish hooks for a play this replica no longer
+// holds: one ended on another replica's copy, or a copy this replica already
+// removed. The caller supplies the snapshot; registered sessions are left as
+// they are. ctx carries the end reason (WithEndReason) and marks the snapshot
+// as detached (IsDetachedFinish), so the hooks can fill what it lacks from
+// shared state.
+func (m *SessionManager) FinishDetached(ctx context.Context, s Session) {
+	m.mu.RLock()
+	hooks := append([]func(context.Context, *Session){}, m.finishHooks...)
+	m.mu.RUnlock()
+	ctx = context.WithValue(ctx, detachedFinishKey{}, true)
+	for _, hook := range hooks {
+		hook(ctx, &s)
+	}
+}
+
+// PositionUnknown marks a FinishDetached snapshot whose position nobody
+// reported: the finish hooks take it from shared state. An explicit zero is
+// a reported position and is kept.
+const PositionUnknown = -1
+
+// EndReasonReplaced is the end reason of a session another one replaced
+// mid-play: a Jellyfin client switched play method.
+const EndReasonReplaced = "replaced"
+
+type endReasonKey struct{}
+type detachedFinishKey struct{}
+
+// WithEndReason tells the finish hooks why the play ended. Without it a
+// finished play ended because its client stopped it.
+func WithEndReason(ctx context.Context, reason string) context.Context {
+	return context.WithValue(ctx, endReasonKey{}, reason)
+}
+
+// EndReasonFromContext is the reason WithEndReason recorded, or "".
+func EndReasonFromContext(ctx context.Context) string {
+	reason, _ := ctx.Value(endReasonKey{}).(string)
+	return reason
+}
+
+// IsDetachedFinish reports whether a finish hook runs for a FinishDetached
+// snapshot rather than a copy this replica held.
+func IsDetachedFinish(ctx context.Context) bool {
+	detached, _ := ctx.Value(detachedFinishKey{}).(bool)
+	return detached
+}
+
 // GetSession returns the session with the given ID, or ErrSessionNotFound.
 func (m *SessionManager) GetSession(sessionID string) (*Session, error) {
 	m.mu.RLock()
@@ -2066,19 +2197,24 @@ func (m *SessionManager) CleanStale() []*Session {
 	active := m.activeGrace
 	paused := m.pausedGrace
 	m.mu.RUnlock()
-	return m.CleanInactive(active, paused)
+	return m.cleanInactive(active, paused, StartupSessionGrace)
 }
 
 // CleanInactive removes sessions whose last playback activity exceeds the
 // provided grace period. Sessions with an active media transport request are
-// preserved even if they have not emitted a recent heartbeat yet.
+// preserved even if they have not emitted a recent heartbeat yet. Unlike
+// CleanStale it applies no startup window.
 func (m *SessionManager) CleanInactive(activeIdle, pausedIdle time.Duration) []*Session {
-	m.refreshDeliveryActivity(activeIdle, pausedIdle)
-	protected := m.refreshCompatActivity(activeIdle, pausedIdle)
+	return m.cleanInactive(activeIdle, pausedIdle, 0)
+}
+
+func (m *SessionManager) cleanInactive(activeIdle, pausedIdle, startupIdle time.Duration) []*Session {
+	m.refreshDeliveryActivity(activeIdle, pausedIdle, startupIdle)
+	protected := m.refreshCompatActivity(activeIdle, pausedIdle, startupIdle)
 	m.mu.Lock()
 
 	now := time.Now()
-	claimed := m.claimCompatExpiryLocked(now, activeIdle, pausedIdle, protected)
+	claimed := m.claimCompatExpiryLocked(now, activeIdle, pausedIdle, startupIdle, protected)
 	var expired []*Session
 	for id, s := range m.sessions {
 		if protected[s] || s.IsJellyfinCompat && claimed != nil && !claimed[id] {
@@ -2088,7 +2224,7 @@ func (m *SessionManager) CleanInactive(activeIdle, pausedIdle time.Duration) []*
 			continue
 		}
 		activeIdle, pausedIdle := sessionGrace(s, activeIdle, pausedIdle)
-		if m.sessionIsInactiveLocked(s, now, activeIdle, pausedIdle) {
+		if m.sessionIsInactiveLocked(s, now, activeIdle, pausedIdle, startupIdle) {
 			cp := *s
 			expired = append(expired, &cp)
 			delete(m.sessions, id)
@@ -2128,7 +2264,7 @@ func (m *SessionManager) countsTowardLimitsLocked(s *Session, now time.Time) boo
 		return true
 	}
 	activeGrace, pausedGrace := sessionGrace(s, m.activeGrace, m.pausedGrace)
-	return !m.sessionIsInactiveLocked(s, now, activeGrace, pausedGrace)
+	return !m.sessionIsInactiveLocked(s, now, activeGrace, pausedGrace, StartupSessionGrace)
 }
 
 // sessionGrace returns the idle windows that apply to s: its own IdleGrace
@@ -2165,7 +2301,10 @@ func remoteTransportGrace(s *Session, activeIdle, pausedIdle time.Duration) (tim
 	return activeIdle, pausedIdle
 }
 
-func (m *SessionManager) sessionIsInactiveLocked(s *Session, now time.Time, activeIdle, pausedIdle time.Duration) bool {
+// sessionIsInactiveLocked reports whether s has been idle past its window. A
+// positive startupIdle also keeps it until that long after its plan was
+// committed (see StartupSessionGrace).
+func (m *SessionManager) sessionIsInactiveLocked(s *Session, now time.Time, activeIdle, pausedIdle, startupIdle time.Duration) bool {
 	if s == nil {
 		return true
 	}
@@ -2187,6 +2326,9 @@ func (m *SessionManager) sessionIsInactiveLocked(s *Session, now time.Time, acti
 	}
 	if grace <= 0 {
 		return !lastActivity.After(now)
+	}
+	if startupIdle > 0 && s.PlanCommittedAt.Add(startupIdle).After(now) {
+		return false
 	}
 
 	return !lastActivity.Add(grace).After(now)

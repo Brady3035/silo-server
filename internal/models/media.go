@@ -770,7 +770,8 @@ type MediaItem struct {
 
 // EpisodeParentArtwork is an episode's season poster and its series' poster
 // and backdrop, so an episode card can draw a hero from series artwork rather
-// than the episode still. Seasons store no backdrop.
+// than the episode still. Section cards also carry the season backdrop, which
+// v2 Continue Watching and Next Up cards show before the series backdrop.
 type EpisodeParentArtwork struct {
 	SeriesPosterPath        string
 	SeriesPosterThumbhash   string
@@ -778,6 +779,8 @@ type EpisodeParentArtwork struct {
 	SeriesBackdropThumbhash string
 	SeasonPosterPath        string
 	SeasonPosterThumbhash   string
+	SeasonBackdropPath      string
+	SeasonBackdropThumbhash string
 }
 
 // ItemBackdrop is one backdrop after an item's primary, a media_item_backdrops
@@ -818,6 +821,18 @@ type Season struct {
 	UpdatedAt               time.Time
 	// MachineTranslatedFields is transient; see MediaItem.
 	MachineTranslatedFields []string `json:"-"`
+	// BackdropPath is the season's landscape art, from a metadata provider or
+	// an admin pick. Like the poster, the series' Images lock keeps a pick.
+	BackdropPath       string
+	BackdropSourcePath string
+	BackdropThumbhash  string
+	// WriteBackdrop is transient: a season upsert writes the three backdrop
+	// columns only when it is set, replacing or clearing the stored backdrop.
+	// Otherwise the stored backdrop stays, whatever the backdrop fields hold.
+	WriteBackdrop bool `json:"-"`
+	// BackdropFillOnly, with WriteBackdrop, writes only while the stored
+	// backdrop is still empty when the upsert holds the row.
+	BackdropFillOnly bool `json:"-"`
 }
 
 // Episode represents a row in the episodes table.

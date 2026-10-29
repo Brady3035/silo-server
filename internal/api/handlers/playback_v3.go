@@ -2338,6 +2338,13 @@ func (h *PlaybackHandler) startPlannedPlaybackV3(r *http.Request, userID int, pr
 		abort()
 		return playback.DecisionResponseV3{}, &transportErrorV3{reason: "internal_error", message: "Failed to commit the live playback session.", cause: err}
 	}
+	// The startup grace runs from here, not from admission: a slow transport
+	// preparation must not use up the client's wait for its startup timeout.
+	if err := h.sessionMgr.MarkPlanCommitted(session.ID); err != nil {
+		transport.rollback()
+		abort()
+		return playback.DecisionResponseV3{}, &transportErrorV3{reason: "internal_error", message: "Failed to commit the live playback session.", cause: err}
+	}
 	if err := h.PlanStoreV3.SaveAttempt(r.Context(), record); err != nil {
 		transport.rollback()
 		abort()
@@ -2348,6 +2355,13 @@ func (h *PlaybackHandler) startPlannedPlaybackV3(r *http.Request, userID int, pr
 		return playback.DecisionResponseV3{}, commitErr
 	}
 	h.recordSessionRecipeV3(r.Context(), result.Plan.PlanID, &transport)
+	if started, err := h.sessionMgr.GetSession(session.ID); err == nil {
+		frontend := LifecycleFrontendBridge
+		if isNativeAPIV2(r.Context()) {
+			frontend = LifecycleFrontendNative
+		}
+		h.SessionStarted(r.Context(), started, frontend)
+	}
 	// Start-side effects belong after both the attempt and transport commits:
 	// retries that lose the idempotency race must not emit duplicate provider
 	// scrobbles or analysis work for the short-lived session they roll back.

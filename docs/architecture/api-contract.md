@@ -916,8 +916,9 @@ fix recorded in [v1 scope](v1-scope.md#breaking-removals-taken-before-lock).
 The short-lived plugin access cookie is transport-specific because its current path is
 `/api/v1`. V2 plugin launch issues the same five-minute, `HttpOnly`, `SameSite=Lax` credential on
 a narrow common v2 plugin-content parent path, using `Secure` on HTTPS. The old-path cookie is
-expired on the applicable launch/logout transition where practical and otherwise dies within its
-existing five-minute maximum. It is never broadened to `/`.
+expired on the applicable launch/logout transition where practical and otherwise dies five minutes
+after it was last issued or renewed; a page request through a cookie past half its lifetime renews
+it while the login session could still refresh ([plugin content](plugin-content.md)). It is never broadened to `/`.
 
 ### Discovery and capability detection
 

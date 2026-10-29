@@ -60,7 +60,10 @@ var apiKeyScopeRoutes = map[string][]scopeRoute{
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/sessions/command-capabilities$`)},
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/sessions/summary$`)},
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/events/capabilities$`)},
+		// The one write: a ticket for the read-only events socket.
+		{http.MethodPost, regexp.MustCompile(`^/api/v2/events/ws-ticket$`)},
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/playback-history$`)},
+		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/playback-history/capabilities$`)},
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/stats/(playback-activity|top-activity|downloads)$`)},
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/users$`)},
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/users/capabilities$`)},
@@ -75,6 +78,7 @@ var apiKeyScopeRoutes = map[string][]scopeRoute{
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/nodes/summary$`)},
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/nodes/capabilities$`)},
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/server/status$`)},
+		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/catalog/(items|capabilities)$`)},
 	},
 	auth.ScopeAdminSessionsControl: {
 		{http.MethodGet, regexp.MustCompile(`^/api/v2/admin/sessions/command-capabilities$`)},

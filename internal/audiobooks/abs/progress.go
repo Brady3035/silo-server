@@ -474,7 +474,7 @@ func (h *Handler) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 	if closed && closeSync != nil {
 		h.mirrorSessionSync(r.Context(), a, sess, *final)
 	}
-	h.stopNativePlaybackSession(r.Context(), sid)
+	h.stopNativePlaybackSession(r.Context(), &sess)
 
 	h.publish(a.UserID, "user_session_closed", map[string]any{
 		"id":            sid,
