@@ -60,7 +60,8 @@ The library cannot tell a 4K copy from an HD one, so it never refuses or
 completes a 4K request. A 4K request is made even when the title is in the
 library, asks for every aired season when it names none, and completes only
 when its 4K target does; its state comes from that target, not from the
-library's season counts. Follows and watchlist requests stay on a title's
+library's season counts, and reads available only once the title is also in
+the library, so a 4K copy not scanned in yet still shows as processing. Follows and watchlist requests stay on a title's
 regular request.
 
 Every quality a request wants is required. A 4K tier that no route sends, or
