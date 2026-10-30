@@ -48,8 +48,8 @@ stored value, and v1 writes never change them.
 Creating a 4K request is refused, after the checks every request gets, when
 the account may not make one (`ErrUHDNotAllowed`) or no server would take it
 (`ErrUHDUnavailable`). With the title's routing facts captured, the 4K tier is
-decided as submission will decide it, so a rule's conditions count and a
-disabled server does not; without them, some enabled route has to send 4K to
+decided as submission will decide it for the requester, so a rule's
+conditions count, requester conditions included, and a disabled server does not; without them, some enabled route has to send 4K to
 an enabled server (under Standard, the server marked 4K). Where a plugin routes
 by itself, a connection has to say it takes 4K (see [Routing](#routing)). The
 title detail's `request_4k` reports the same answers for the media type as
@@ -65,7 +65,10 @@ regular request.
 
 Every quality a request wants is required. A 4K tier that no route sends, or
 that a matching rule skips, becomes a failed target with the reason, rather
-than leaving the request approved with nothing sent.
+than leaving the request approved with nothing sent. An approved 4K request with no
+download server for its media type does not wait for the library either: its
+submission fails with the reason, retries, and fails the request once the
+attempts run out.
 
 ## Routing facts
 
